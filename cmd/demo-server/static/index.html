@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Job Queue Demo</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+    .sub { color: #666; font-size: 0.9rem; margin-bottom: 1.5rem; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+    button { padding: 0.5rem 1rem; margin-right: 0.5rem; margin-bottom: 0.5rem; cursor: pointer; background: #2563eb; color: white; border: none; border-radius: 6px; }
+    button:hover { background: #1d4ed8; }
+    button:disabled { background: #94a3b8; cursor: not-allowed; }
+    .job-id { font-family: monospace; font-size: 0.85rem; word-break: break-all; margin-top: 0.5rem; }
+    .status { margin-top: 0.75rem; padding: 0.5rem; background: #f1f5f9; border-radius: 4px; font-size: 0.9rem; }
+    .status strong { display: inline-block; min-width: 5rem; }
+    .links { margin-top: 1.5rem; }
+    .links a { color: #2563eb; }
+    .error { color: #dc2626; }
+  </style>
+</head>
+<body>
+  <h1>Job Queue Demo</h1>
+  <p class="sub">Submit jobs and check status. Results: MailHog (emails), <code>./out/demo-report.csv</code> (report).</p>
+
+  <div class="card">
+    <h2 style="margin-top:0; font-size:1.1rem;">Submit job</h2>
+    <button data-type="hello">Submit Hello</button>
+    <button data-type="email">Submit Email</button>
+    <button data-type="report">Submit Report</button>
+    <div id="last-job" class="job-id"></div>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-top:0; font-size:1.1rem;">Check status</h2>
+    <input type="text" id="job-id-input" placeholder="Paste job ID" style="width:100%; padding:0.5rem; margin-bottom:0.5rem;">
+    <button id="btn-status">Get status</button>
+    <div id="status-result" class="status"></div>
+  </div>
+
+  <div class="links">
+    <a href="http://localhost:8025" target="_blank">Open MailHog (emails)</a>
+  </div>
+
+  <script>
+    const lastJobEl = document.getElementById('last-job');
+    const jobIdInput = document.getElementById('job-id-input');
+    const statusResult = document.getElementById('status-result');
+    const btnStatus = document.getElementById('btn-status');
+
+    document.querySelectorAll('button[data-type]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        try {
+          const res = await fetch('/api/submit', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: btn.dataset.type })
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || res.statusText || 'Request failed');
+          lastJobEl.textContent = 'Job ID: ' + data.job_id;
+          jobIdInput.value = data.job_id;
+        } catch (e) {
+          lastJobEl.innerHTML = '<span class="error">Error: ' + e.message + '</span>';
+        }
+        btn.disabled = false;
+      });
+    });
+
+    btnStatus.addEventListener('click', async () => {
+      const id = jobIdInput.value.trim();
+      if (!id) { statusResult.textContent = 'Enter a job ID'; return; }
+      btnStatus.disabled = true;
+        try {
+          const res = await fetch('/api/status/' + encodeURIComponent(id));
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || res.statusText || 'Request failed');
+          statusResult.innerHTML = '<strong>Status:</strong> ' + data.status + '<br><strong>Attempt:</strong> ' + data.attempt + (data.last_error ? '<br><strong>Error:</strong> ' + data.last_error : '');
+        } catch (e) {
+          statusResult.innerHTML = '<span class="error">' + e.message + '</span>';
+        }
+      btnStatus.disabled = false;
+    });
+  </script>
+</body>
+</html>

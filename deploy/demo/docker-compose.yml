@@ -1,0 +1,112 @@
+# Demo stack: Redis + Postgres + MailHog + Job API + Worker. Optional: Kafka, dashboard, user-service, billing-service.
+# Usage: docker compose -f deploy/demo/docker-compose.yml up -d
+# Then: ./scripts/demo.sh  (or see README Demo section)
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 5
+
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: jobs
+      POSTGRES_PASSWORD: jobs
+      POSTGRES_DB: jobs
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobs"]
+      interval: 2s
+      timeout: 3s
+      retries: 5
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    ports:
+      - "1025:1025"   # SMTP
+      - "8025:8025"   # Web UI
+
+  job-api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.api
+    ports:
+      - "50051:50051"
+      - "8083:8080"
+      - "9090:9090"
+    environment:
+      REDIS_ADDR: redis:6379
+      GRPC_ADDR: ":50051"
+      REST_ADDR: ":8080"
+      METRICS_ADDR: ":9090"
+      POSTGRES_DSN: "postgres://jobs:jobs@postgres:5432/jobs?sslmode=disable"
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  job-worker:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.worker
+    environment:
+      REDIS_ADDR: redis:6379
+      POSTGRES_DSN: "postgres://jobs:jobs@postgres:5432/jobs?sslmode=disable"
+      SMTP_ADDR: mailhog:1025
+      EMAIL_FROM: noreply@localhost
+      WORKER_CONCURRENCY: "5"
+      METRICS_ADDR: ":9091"
+      REPORT_OUTPUT_DIR: /out
+      INVOICE_OUTPUT_DIR: /out
+      IMAGE_OUTPUT_DIR: /out
+    volumes:
+      - ../../out:/out
+    depends_on:
+      - redis
+      - postgres
+      - job-api
+
+  user-service:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.user-service
+    ports:
+      - "8081:8081"
+    environment:
+      JOB_API_URL: http://job-api:8080
+      LISTEN_ADDR: ":8081"
+    depends_on:
+      - job-api
+
+  billing-service:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.billing-service
+    ports:
+      - "8082:8082"
+    environment:
+      JOB_API_URL: http://job-api:8080
+      LISTEN_ADDR: ":8082"
+    depends_on:
+      - job-api
+
+  # Optional: simple dashboard to submit jobs and see status
+  dashboard:
+    build:
+      context: ../..
+      dockerfile: deploy/demo/dashboard/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      JOB_API_ADDR: job-api:50051
+    depends_on:
+      - job-api
+

@@ -1,0 +1,69 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: job-worker
+  namespace: default
+  labels:
+    app: job-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: job-worker
+  template:
+    metadata:
+      labels:
+        app: job-worker
+    spec:
+      containers:
+        - name: worker
+          image: job-worker:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: REDIS_ADDR
+              value: "redis:6379"
+            - name: WORKER_CONCURRENCY
+              value: "5"
+            - name: SMTP_ADDR
+              value: "mailhog:1025"
+            - name: EMAIL_FROM
+              value: "noreply@localhost"
+          ports:
+            - containerPort: 9090
+              name: health
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 9090
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "200m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+---
+# Optional: headless service if workers need to be discovered
+apiVersion: v1
+kind: Service
+metadata:
+  name: job-worker
+  namespace: default
+  labels:
+    app: job-worker
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: 9090
+      name: metrics
+  selector:
+    app: job-worker
