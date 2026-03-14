@@ -54,7 +54,7 @@ This repo is a **distributed job processing system**: you submit jobs (email, re
 
 ## Option B: Full stack with Docker (recommended for demo)
 
-Runs Kafka, Postgres, MailHog, Job API, worker, dashboard, user-service, and billing-service.
+Runs Kafka, Postgres, MailHog, Job API, worker, scheduler, dashboard, user-service, billing-service, Loki, and Promtail.
 
 1. **Start all services**:
 
@@ -86,6 +86,7 @@ Runs Kafka, Postgres, MailHog, Job API, worker, dashboard, user-service, and bil
    | View emails       | http://localhost:8025 (MailHog) |
    | User service      | http://localhost:8081 |
    | Billing service   | http://localhost:8082 |
+   | Logs (Loki)       | http://localhost:3100 — Promtail ships container logs to Loki; use Grafana with datasource `http://loki:3100` to query (Explore) |
    | Report output     | `./out/demo-report.csv` (after report job runs) |
 
 5. **Stop**:

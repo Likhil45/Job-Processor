@@ -1,6 +1,11 @@
-# Demo stack: Kafka (KRaft, no Zookeeper) + Postgres + MailHog + Job API + Worker.
+# Demo stack: Kafka (KRaft, no Zookeeper) + Postgres + MailHog + Job API + Worker + Loki + Promtail.
 # Usage: docker compose -f deploy/demo/docker-compose.yml up -d
 # Then apply Postgres schema and run ./scripts/demo.sh (see README Demo section)
+#
+# Logs: Loki (http://localhost:3100) stores logs; Promtail ships container logs to Loki.
+# On Linux, Promtail mounts the Docker socket and container log dir. On Docker Desktop (Windows/Mac),
+# those paths may not be available; add Grafana and use "Explore > Loki" with URL http://loki:3100
+# (from another container), or install the Loki Docker log driver and send logs from each service to Loki.
 
 services:
   # Kafka in KRaft mode (no Zookeeper). Uses Apache Kafka image (pullable when Bitnami fails).
@@ -67,6 +72,29 @@ services:
       postgres:
         condition: service_healthy
 
+  job-scheduler:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.scheduler
+    environment:
+      POSTGRES_DSN: "postgres://jobs:jobs@postgres:5432/jobs?sslmode=disable"
+      KAFKA_BROKERS: "kafka:9092"
+      KAFKA_JOBS_TOPIC: job.requests
+      SCHEDULER_INTERVAL: "2m"
+      SCHEDULER_HTTP_ADDR: ":9091"
+    ports:
+      - "9091:9091"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:9091/ready || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
   job-worker:
     build:
       context: ../..
@@ -124,4 +152,29 @@ services:
       LISTEN_ADDR: ":8080"
     depends_on:
       - job-api
+
+  loki:
+    image: grafana/loki:2.9.4
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/local-config.yaml:ro
+    command: -config.file=/etc/loki/local-config.yaml
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3100/ready || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+  promtail:
+    image: grafana/promtail:2.9.4
+    volumes:
+      - ./promtail/promtail-config.yaml:/etc/promtail/promtail-config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command: -config.file=/etc/promtail/promtail-config.yaml
+    depends_on:
+      - loki
+    # On Docker Desktop (Windows/Mac) the container log path may not be available;
+    # Promtail may show no logs. Use Loki Docker log driver on app services as an alternative.
 

@@ -31,4 +31,12 @@ var (
 		},
 		[]string{"type"},
 	)
+	// JobsScheduledTotal counts jobs created by the scheduler (fake job generator).
+	JobsScheduledTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "jobs_scheduled_total",
+			Help: "Total number of jobs scheduled by the fake job scheduler",
+		},
+		[]string{"type"},
+	)
 )

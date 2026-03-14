@@ -3,7 +3,8 @@
 This repo includes a phased implementation of a **distributed job processing system** for local development on Minikube.
 
 **→ [How to use this repo](docs/HOW_TO_USE.md)** — quick start (local or Docker), submitting jobs, checking status, and admin.  
-**→ [How user-service and billing-service are used](docs/UPSTREAM_SERVICES.md)** — demo upstream services that submit jobs to the Job API.
+**→ [How user-service and billing-service are used](docs/UPSTREAM_SERVICES.md)** — demo upstream services that submit jobs to the Job API.  
+**→ [Fake job scheduler](docs/SCHEDULER.md)** — periodic fake job generator (email, image, invoice, report) that enqueues to Kafka + Postgres.
 
 ### Features
 
@@ -54,7 +55,7 @@ Minikube manifests in `deploy/minikube` reference Redis and need to be updated f
 
 ### Demo (one-command run)
 
-Run the full stack locally (Kafka, Postgres, MailHog, Job API, worker, dashboard). Requires [Docker](https://docs.docker.com/get-docker/).
+Run the full stack locally (Kafka, Postgres, MailHog, Job API, worker, scheduler, dashboard). Requires [Docker](https://docs.docker.com/get-docker/).
 
 1. **Start everything**:
 
@@ -79,6 +80,8 @@ Run the full stack locally (Kafka, Postgres, MailHog, Job API, worker, dashboard
    - **REST API:** http://localhost:8083 — POST/GET /jobs, GET /jobs/:id, POST /jobs/:id/retry, POST /jobs/:id/cancel, GET /admin/queues.
    - **User service:** http://localhost:8081 — POST /register, POST /password-reset.
    - **Billing service:** http://localhost:8082 — POST /invoice, POST /report, POST /invoice-ready.
+   - **Scheduler:** Runs in the stack; generates fake jobs every 2m. Health/metrics: http://localhost:9091. See [docs/SCHEDULER.md](docs/SCHEDULER.md).
+   - **Logs (Loki):** Loki at http://localhost:3100; Promtail ships container logs to Loki. Add Grafana (e.g. port 3000) and add a Loki datasource `http://loki:3100` to query logs in Explore.
    - **Emails:** http://localhost:8025 (MailHog).
    - **Report:** `./out/demo-report.csv` (after report job runs).
 
@@ -96,7 +99,7 @@ Run the full stack locally (Kafka, Postgres, MailHog, Job API, worker, dashboard
 - `cmd/demo-server` – Demo dashboard (HTTP UI + proxy to Job API REST)
 - `cmd/user-service` – Demo upstream: POST /register, /password-reset
 - `cmd/billing-service` – Demo upstream: POST /invoice, /report, /invoice-ready
-- `cmd/scheduler` – Stub (delayed jobs not implemented in Kafka-only initial version)
+- `cmd/scheduler` – Periodic fake job generator; writes to Kafka + Postgres (same topic/table as API). See [docs/SCHEDULER.md](docs/SCHEDULER.md).
 - `scripts/demo.sh` – Demo script: submits hello, email, report jobs
 - `deploy/demo` – Docker Compose (Kafka, Postgres, MailHog, API, worker, user-service, billing-service, dashboard)
 - `deploy/postgres` – Postgres schema for job metadata
@@ -123,6 +126,8 @@ Run the full stack locally (Kafka, Postgres, MailHog, Job API, worker, dashboard
 | SMTP_ADDR            | (empty)     | SMTP for email jobs (e.g. mailhog:1025)              |
 | EMAIL_FROM           | noreply@localhost | From address for email jobs                        |
 | JOB_API_URL          | (empty)     | Job API REST base URL (enqueue, demo-server, user-service, billing-service) |
+| SCHEDULER_INTERVAL   | 2m          | How often the scheduler generates a round of fake jobs (scheduler only) |
+| SCHEDULER_HTTP_ADDR  | :9091       | Health and metrics listen address (scheduler only) |
 
 ### cURL examples
 
