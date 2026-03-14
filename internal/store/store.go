@@ -18,6 +18,7 @@ type JobRecord struct {
 	UpdatedAt        time.Time
 	CompletedAt      *time.Time
 	AsynqTaskID      string // same as ID when using Asynq; for correlation
+	RunAtUnixSec     int64  // when to run (0 = immediate); used for delayed/scheduled jobs
 }
 
 // Store is the interface for job metadata persistence.
@@ -30,4 +31,6 @@ type Store interface {
 	List(ctx context.Context, queue, status string, limit, offset int) ([]*JobRecord, error)
 	// UpdateStatus updates status, attempt, last_error, updated_at; optionally completed_at.
 	UpdateStatus(ctx context.Context, id, status, lastError string, attempt int32, completedAt *time.Time) error
+	// ListScheduledDue returns jobs with status=scheduled and run_at_unix_sec <= runAtBeforeUnix (for promoter).
+	ListScheduledDue(ctx context.Context, runAtBeforeUnix int64, limit int) ([]*JobRecord, error)
 }

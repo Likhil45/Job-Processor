@@ -6,16 +6,20 @@
   <title>Job Queue Demo</title>
   <style>
     * { box-sizing: border-box; }
-    body { font-family: system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+    body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
     h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
     .sub { color: #666; font-size: 0.9rem; margin-bottom: 1.5rem; }
     .card { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
     button { padding: 0.5rem 1rem; margin-right: 0.5rem; margin-bottom: 0.5rem; cursor: pointer; background: #2563eb; color: white; border: none; border-radius: 6px; }
     button:hover { background: #1d4ed8; }
     button:disabled { background: #94a3b8; cursor: not-allowed; }
+    button.scenario { background: #059669; }
+    button.scenario:hover { background: #047857; }
     .job-id { font-family: monospace; font-size: 0.85rem; word-break: break-all; margin-top: 0.5rem; }
     .status { margin-top: 0.75rem; padding: 0.5rem; background: #f1f5f9; border-radius: 4px; font-size: 0.9rem; }
     .status strong { display: inline-block; min-width: 5rem; }
+    .scenario-steps { margin-top: 0.5rem; padding-left: 1.25rem; font-size: 0.85rem; color: #475569; }
+    .scenario-steps li { margin-bottom: 0.25rem; }
     .links { margin-top: 1.5rem; }
     .links a { color: #2563eb; }
     .error { color: #dc2626; }
@@ -23,7 +27,20 @@
 </head>
 <body>
   <h1>Job Queue Demo</h1>
-  <p class="sub">Submit jobs and check status. Results: MailHog (emails), <code>./out/demo-report.csv</code> (report).</p>
+  <p class="sub">Submit jobs and check status. Use <strong>Demo scenarios</strong> to show normal flow, retries, delayed run, DLQ, and crash recovery.</p>
+
+  <div class="card">
+    <h2 style="margin-top:0; font-size:1.1rem;">Demo scenarios</h2>
+    <p style="font-size:0.9rem; color:#64748b; margin:0 0 0.75rem 0;">Run each scenario and watch status below or in logs.</p>
+    <button class="scenario" data-scenario="A">A: Normal success (email)</button>
+    <button class="scenario" data-scenario="B">B: Retry & recovery (invoice)</button>
+    <button class="scenario" data-scenario="C">C: Delayed 60s (report)</button>
+    <button class="scenario" data-scenario="D">D: Permanent failure → DLQ (invalid image)</button>
+    <button data-type="image" title="Replay with valid payload">D: Replay (valid image)</button>
+    <button class="scenario" data-scenario="E">E: Worker crash recovery (sleep 30s)</button>
+    <div id="scenario-result" class="job-id"></div>
+    <ul id="scenario-steps" class="scenario-steps" style="display:none;"></ul>
+  </div>
 
   <div class="card">
     <h2 style="margin-top:0; font-size:1.1rem;">Submit job</h2>
@@ -49,6 +66,32 @@
     const jobIdInput = document.getElementById('job-id-input');
     const statusResult = document.getElementById('status-result');
     const btnStatus = document.getElementById('btn-status');
+
+    document.querySelectorAll('button[data-scenario]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const scenario = btn.dataset.scenario;
+        btn.disabled = true;
+        const resultEl = document.getElementById('scenario-result');
+        const stepsEl = document.getElementById('scenario-steps');
+        resultEl.textContent = '';
+        stepsEl.style.display = 'none';
+        stepsEl.innerHTML = '';
+        try {
+          const res = await fetch('/api/scenario/' + scenario, { method: 'POST' });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || res.statusText || 'Request failed');
+          resultEl.textContent = 'Scenario ' + data.scenario + ' — Job ID: ' + data.job_id;
+          jobIdInput.value = data.job_id;
+          if (data.steps && data.steps.length) {
+            stepsEl.innerHTML = data.steps.map(s => '<li>' + s + '</li>').join('');
+            stepsEl.style.display = 'block';
+          }
+        } catch (e) {
+          resultEl.innerHTML = '<span class="error">Error: ' + e.message + '</span>';
+        }
+        btn.disabled = false;
+      });
+    });
 
     document.querySelectorAll('button[data-type]').forEach(btn => {
       btn.addEventListener('click', async () => {

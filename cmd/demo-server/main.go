@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 )
 
 //go:embed static/index.html
@@ -24,6 +25,7 @@ func main() {
 	http.HandleFunc("/", serveIndex)
 	http.HandleFunc("/api/submit", handleSubmit)
 	http.HandleFunc("/api/status/", handleStatus)
+	http.HandleFunc("/api/scenario/", handleScenario)
 	http.HandleFunc("/api/links", handleLinks)
 
 	addr := getEnv("LISTEN_ADDR", ":8080")
@@ -133,8 +135,132 @@ func getDefaultPayload(jobType string) []byte {
 		return []byte(`{"to":"demo@localhost","subject":"From Dashboard","body":"Submitted via the demo dashboard."}`)
 	case "report":
 		return []byte(`{"headers":["Name","Count"],"rows":[["Dashboard","1"],["Demo","2"]],"out_path":"/out/demo-report.csv"}`)
+	case "invoice":
+		return []byte(`{"template":"Invoice #{{.ID}}\nTotal: ${{.Total}}","data":{"ID":"DEMO-001","Total":"99.00"},"out_path":""}`)
+	case "image":
+		return []byte(`{"source_url":"https://via.placeholder.com/100","width":50,"height":50,"out_path":""}`)
+	case "sleep":
+		return []byte(`{"seconds":30}`)
 	default:
 		return []byte("{}")
+	}
+}
+
+func handleScenario(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	scenarioID := strings.TrimPrefix(r.URL.Path, "/api/scenario/")
+	scenarioID = strings.TrimSpace(strings.ToUpper(scenarioID))
+	if scenarioID == "" {
+		writeJSONError(w, "scenario required (A, B, C, D, E)", http.StatusBadRequest)
+		return
+	}
+
+	var body struct {
+		Type    string          `json:"type"`
+		Payload json.RawMessage `json:"payload"`
+		Options *struct {
+			MaxRetry     int32 `json:"max_retry"`
+			RunAtUnixSec int64 `json:"run_at_unix_sec"`
+		} `json:"options"`
+	}
+	switch scenarioID {
+	case "A":
+		body.Type = "email"
+		body.Payload = getDefaultPayload("email")
+		body.Options = &struct {
+			MaxRetry     int32 `json:"max_retry"`
+			RunAtUnixSec int64 `json:"run_at_unix_sec"`
+		}{MaxRetry: 0}
+	case "B":
+		body.Type = "invoice"
+		body.Payload = []byte(`{"template":"Invoice #{{.ID}}\nTotal: ${{.Total}}","data":{"ID":"RETRY-DEMO","Total":"42.00","_demo_fail_until_attempt":1},"out_path":""}`)
+		body.Options = &struct {
+			MaxRetry     int32 `json:"max_retry"`
+			RunAtUnixSec int64 `json:"run_at_unix_sec"`
+		}{MaxRetry: 2}
+	case "C":
+		body.Type = "report"
+		body.Payload = []byte(`{"headers":["Name","Count"],"rows":[["Delayed","1"]],"out_path":"/out/delayed-report.csv"}`)
+		runAt := time.Now().Unix() + 60
+		body.Options = &struct {
+			MaxRetry     int32 `json:"max_retry"`
+			RunAtUnixSec int64 `json:"run_at_unix_sec"`
+		}{RunAtUnixSec: runAt}
+	case "D":
+		body.Type = "image"
+		body.Payload = []byte(`{}`)
+		body.Options = &struct {
+			MaxRetry     int32 `json:"max_retry"`
+			RunAtUnixSec int64 `json:"run_at_unix_sec"`
+		}{MaxRetry: 2}
+	case "E":
+		body.Type = "sleep"
+		body.Payload = []byte(`{"seconds":30}`)
+		body.Options = &struct {
+			MaxRetry     int32 `json:"max_retry"`
+			RunAtUnixSec int64 `json:"run_at_unix_sec"`
+		}{MaxRetry: 0}
+	default:
+		writeJSONError(w, "unknown scenario (use A, B, C, D, E)", http.StatusBadRequest)
+		return
+	}
+
+	raw, _ := json.Marshal(body)
+	hr, err := http.NewRequest(http.MethodPost, jobAPIBaseURL+"/jobs", bytes.NewReader(raw))
+	if err != nil {
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	hr.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(hr)
+	if err != nil {
+		slog.Warn("scenario submit", "scenario", scenarioID, "err", err)
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		slog.Warn("scenario submit", "scenario", scenarioID, "status", resp.Status, "body", string(b))
+		w.WriteHeader(resp.StatusCode)
+		w.Write(b)
+		return
+	}
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	steps := scenarioSteps(scenarioID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"scenario": scenarioID,
+		"job_id":   out.JobID,
+		"steps":    steps,
+		"message":  "Check status below or wait for worker to process.",
+	})
+}
+
+func scenarioSteps(id string) []string {
+	switch id {
+	case "A":
+		return []string{"Job submitted", "Worker picks from queue", "Status → completed", "Execution history in DB"}
+	case "B":
+		return []string{"Invoice job submitted (will fail attempt 1)", "Worker retries with backoff", "Attempt 2 succeeds", "Status → completed"}
+	case "C":
+		return []string{"Report job scheduled 60s in future", "Status stays scheduled", "Scheduler promotes when due", "Worker runs → completed"}
+	case "D":
+		return []string{"Image job with invalid payload submitted", "Worker fails repeatedly", "Max retries exceeded → archived (DLQ)", "Use “Replay (valid image)” below to submit a fixed job"}
+	case "E":
+		return []string{"Long-running sleep job (30s) submitted", "Kill the worker pod/process while it runs", "Restart worker; Kafka redelivers the message", "Job completes on recovery"}
+	default:
+		return nil
 	}
 }
 

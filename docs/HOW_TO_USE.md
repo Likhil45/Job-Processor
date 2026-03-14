@@ -81,7 +81,7 @@ Runs Kafka, Postgres, MailHog, Job API, worker, scheduler, dashboard, user-servi
 
    | What              | URL / Action |
    |-------------------|--------------|
-   | Web dashboard     | http://localhost:8080 |
+   | Web dashboard     | http://localhost:8080 — submit jobs and run demo scenarios A–E (success, retry, delayed, DLQ, crash recovery) |
    | REST API          | http://localhost:8083 |
    | View emails       | http://localhost:8025 (MailHog) |
    | User service      | http://localhost:8081 |

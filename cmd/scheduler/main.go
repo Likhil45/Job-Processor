@@ -99,6 +99,7 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go scheduler.Run(ctx, interval, submit)
+	go scheduler.RunPromoter(ctx, pgStore, jobProducer, 15*time.Second)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

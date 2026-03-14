@@ -42,6 +42,7 @@ func main() {
 	registry.Register(&jobs.Image{OutputDir: getEnv("IMAGE_OUTPUT_DIR", "")})
 	registry.Register(&jobs.Invoice{OutputDir: getEnv("INVOICE_OUTPUT_DIR", "")})
 	registry.Register(&jobs.Report{OutputDir: getEnv("REPORT_OUTPUT_DIR", "")})
+	registry.Register(jobs.Sleep{})
 
 	pgStore, err := store.NewPostgresStore(postgresDSN)
 	if err != nil {
@@ -84,7 +85,8 @@ func main() {
 			eventProducer.Emit(ctx, events.JobEvent{JobID: req.JobID, Type: req.Type, Event: events.EventFailed, LastError: "unknown task type"})
 			return nil
 		}
-		err = h.Handle(ctx, req.Payload)
+		attemptCtx := context.WithValue(ctx, jobs.AttemptContextKey, req.Attempt)
+		err = h.Handle(attemptCtx, req.Payload)
 		if err != nil {
 			metrics.JobsProcessedTotal.WithLabelValues(req.Type, "failure").Inc()
 			attempt := req.Attempt + 1

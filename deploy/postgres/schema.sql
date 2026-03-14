@@ -12,12 +12,17 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   completed_at      TIMESTAMPTZ,
-  asynq_task_id     TEXT NOT NULL DEFAULT ''
+  asynq_task_id     TEXT NOT NULL DEFAULT '',
+  run_at_unix_sec   BIGINT NOT NULL DEFAULT 0
 );
+
+-- Backfill run_at for existing rows (optional; new deployments skip).
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS run_at_unix_sec BIGINT NOT NULL DEFAULT 0;
 
 CREATE INDEX IF NOT EXISTS idx_jobs_queue ON jobs(queue);
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_jobs_scheduled ON jobs(status, run_at_unix_sec) WHERE status = 'scheduled';
 
 -- Optional: job_events for full audit trail (Phase 2 can populate via Kafka consumer).
 CREATE TABLE IF NOT EXISTS job_events (

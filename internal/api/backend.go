@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/savvients/sip-core/internal/events"
@@ -86,14 +87,21 @@ func (b *KafkaPostgresBackend) Submit(ctx context.Context, jobType string, paylo
 		statusStr = "scheduled"
 	}
 	if err := b.store.Create(ctx, &store.JobRecord{
-		ID:          jobID,
-		Type:        jobType,
-		Payload:     payload,
-		Queue:       queue,
-		Status:      statusStr,
-		AsynqTaskID: jobID,
+		ID:           jobID,
+		Type:         jobType,
+		Payload:      payload,
+		Queue:        queue,
+		Status:       statusStr,
+		AsynqTaskID:  jobID,
+		RunAtUnixSec: runAtUnixSec,
 	}); err != nil {
 		return "", err
+	}
+	// Delayed jobs: do not enqueue until run_at; the scheduler promoter will enqueue them when due.
+	now := time.Now().Unix()
+	if runAtUnixSec > 0 && runAtUnixSec > now {
+		b.events.Emit(ctx, events.JobEvent{JobID: jobID, Type: jobType, Event: events.EventSubmitted, Queue: queue, Payload: payload})
+		return jobID, nil
 	}
 	if _, err := b.producer.Enqueue(ctx, jobID, jobType, payload, queue, maxRetry, runAtUnixSec, 0); err != nil {
 		return "", err

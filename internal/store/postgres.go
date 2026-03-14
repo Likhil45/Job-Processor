@@ -39,8 +39,8 @@ func (s *PostgresStore) Ping(ctx context.Context) error {
 // Create inserts a new job record.
 func (s *PostgresStore) Create(ctx context.Context, job *JobRecord) error {
 	query := `
-		INSERT INTO jobs (id, type, payload, queue, status, attempt, last_error, created_at, updated_at, asynq_task_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO jobs (id, type, payload, queue, status, attempt, last_error, created_at, updated_at, asynq_task_id, run_at_unix_sec)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 	`
 	now := time.Now()
 	if job.CreatedAt.IsZero() {
@@ -49,9 +49,13 @@ func (s *PostgresStore) Create(ctx context.Context, job *JobRecord) error {
 	if job.UpdatedAt.IsZero() {
 		job.UpdatedAt = now
 	}
+	runAt := job.RunAtUnixSec
+	if runAt < 0 {
+		runAt = 0
+	}
 	_, err := s.db.ExecContext(ctx, query,
 		job.ID, job.Type, job.Payload, job.Queue, job.Status, job.Attempt, job.LastError,
-		job.CreatedAt, job.UpdatedAt, job.AsynqTaskID,
+		job.CreatedAt, job.UpdatedAt, job.AsynqTaskID, runAt,
 	)
 	return err
 }
@@ -59,14 +63,14 @@ func (s *PostgresStore) Create(ctx context.Context, job *JobRecord) error {
 // GetByID returns a job by ID.
 func (s *PostgresStore) GetByID(ctx context.Context, id string) (*JobRecord, error) {
 	query := `
-		SELECT id, type, payload, queue, status, attempt, last_error, created_at, updated_at, completed_at, asynq_task_id
+		SELECT id, type, payload, queue, status, attempt, last_error, created_at, updated_at, completed_at, asynq_task_id, run_at_unix_sec
 		FROM jobs WHERE id = $1
 	`
 	var j JobRecord
 	var completedAt sql.NullTime
 	err := s.db.QueryRowContext(ctx, query, id).Scan(
 		&j.ID, &j.Type, &j.Payload, &j.Queue, &j.Status, &j.Attempt, &j.LastError,
-		&j.CreatedAt, &j.UpdatedAt, &completedAt, &j.AsynqTaskID,
+		&j.CreatedAt, &j.UpdatedAt, &completedAt, &j.AsynqTaskID, &j.RunAtUnixSec,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -86,7 +90,7 @@ func (s *PostgresStore) List(ctx context.Context, queue, status string, limit, o
 		limit = 100
 	}
 	query := `
-		SELECT id, type, payload, queue, status, attempt, last_error, created_at, updated_at, completed_at, asynq_task_id
+		SELECT id, type, payload, queue, status, attempt, last_error, created_at, updated_at, completed_at, asynq_task_id, run_at_unix_sec
 		FROM jobs
 		WHERE ($1 = '' OR queue = $1) AND ($2 = '' OR jobs.status = $2)
 		ORDER BY created_at DESC
@@ -103,7 +107,42 @@ func (s *PostgresStore) List(ctx context.Context, queue, status string, limit, o
 		var completedAt sql.NullTime
 		if err := rows.Scan(
 			&j.ID, &j.Type, &j.Payload, &j.Queue, &j.Status, &j.Attempt, &j.LastError,
-			&j.CreatedAt, &j.UpdatedAt, &completedAt, &j.AsynqTaskID,
+			&j.CreatedAt, &j.UpdatedAt, &completedAt, &j.AsynqTaskID, &j.RunAtUnixSec,
+		); err != nil {
+			return nil, err
+		}
+		if completedAt.Valid {
+			j.CompletedAt = &completedAt.Time
+		}
+		out = append(out, &j)
+	}
+	return out, rows.Err()
+}
+
+// ListScheduledDue returns jobs with status=scheduled and run_at_unix_sec <= runAtBeforeUnix.
+func (s *PostgresStore) ListScheduledDue(ctx context.Context, runAtBeforeUnix int64, limit int) ([]*JobRecord, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	query := `
+		SELECT id, type, payload, queue, status, attempt, last_error, created_at, updated_at, completed_at, asynq_task_id, run_at_unix_sec
+		FROM jobs
+		WHERE status = 'scheduled' AND run_at_unix_sec > 0 AND run_at_unix_sec <= $1
+		ORDER BY run_at_unix_sec ASC
+		LIMIT $2
+	`
+	rows, err := s.db.QueryContext(ctx, query, runAtBeforeUnix, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*JobRecord
+	for rows.Next() {
+		var j JobRecord
+		var completedAt sql.NullTime
+		if err := rows.Scan(
+			&j.ID, &j.Type, &j.Payload, &j.Queue, &j.Status, &j.Attempt, &j.LastError,
+			&j.CreatedAt, &j.UpdatedAt, &completedAt, &j.AsynqTaskID, &j.RunAtUnixSec,
 		); err != nil {
 			return nil, err
 		}

@@ -76,7 +76,7 @@ Run the full stack locally (Kafka, Postgres, MailHog, Job API, worker, scheduler
    On Windows use the dashboard or Git Bash for `demo.sh`.
 
 4. **See results**
-   - **Dashboard:** http://localhost:8080 — submit jobs and check status (uses REST).
+   - **Dashboard:** http://localhost:8080 — submit jobs, check status, and run **demo scenarios (A–E)** to see normal flow, retry/recovery, delayed scheduling, DLQ, and worker crash recovery.
    - **REST API:** http://localhost:8083 — POST/GET /jobs, GET /jobs/:id, POST /jobs/:id/retry, POST /jobs/:id/cancel, GET /admin/queues.
    - **User service:** http://localhost:8081 — POST /register, POST /password-reset.
    - **Billing service:** http://localhost:8082 — POST /invoice, POST /report, POST /invoice-ready.
