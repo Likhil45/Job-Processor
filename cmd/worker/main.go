@@ -6,28 +6,35 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/hibiken/asynq"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/redis/go-redis/v9"
 	"github.com/savvients/sip-core/internal/events"
 	"github.com/savvients/sip-core/internal/jobs"
-	"github.com/savvients/sip-core/internal/queue"
+	"github.com/savvients/sip-core/internal/kafkaqueue"
+	"github.com/savvients/sip-core/internal/metrics"
 	"github.com/savvients/sip-core/internal/store"
 )
 
 func main() {
-	redisAddr := getEnv("REDIS_ADDR", "localhost:6379")
-	redisPassword := getEnv("REDIS_PASSWORD", "")
-	redisDB, _ := strconv.Atoi(getEnv("REDIS_DB", "0"))
-	concurrency, _ := strconv.Atoi(getEnv("WORKER_CONCURRENCY", "5"))
 	postgresDSN := getEnv("POSTGRES_DSN", "")
 	kafkaBrokers := getEnv("KAFKA_BROKERS", "")
 	kafkaTopic := getEnv("KAFKA_TOPIC", "job.events")
+	kafkaJobsTopic := getEnv("KAFKA_JOBS_TOPIC", "job.requests")
+	kafkaGroupID := getEnv("KAFKA_CONSUMER_GROUP", "job-worker")
+
+	if postgresDSN == "" {
+		slog.Error("POSTGRES_DSN is required")
+		os.Exit(1)
+	}
+	if kafkaBrokers == "" {
+		slog.Error("KAFKA_BROKERS is required")
+		os.Exit(1)
+	}
+
+	brokers := splitTrim(kafkaBrokers, ",")
 
 	registry := jobs.NewRegistry()
 	registry.Register(jobs.Hello{})
@@ -36,55 +43,79 @@ func main() {
 	registry.Register(&jobs.Invoice{OutputDir: getEnv("INVOICE_OUTPUT_DIR", "")})
 	registry.Register(&jobs.Report{OutputDir: getEnv("REPORT_OUTPUT_DIR", "")})
 
-	var jobStore store.Store
-	if postgresDSN != "" {
-		pgStore, err := store.NewPostgresStore(postgresDSN)
-		if err != nil {
-			slog.Error("postgres store", "err", err)
-			os.Exit(1)
-		}
-		defer pgStore.Close()
-		jobStore = pgStore
+	pgStore, err := store.NewPostgresStore(postgresDSN)
+	if err != nil {
+		slog.Error("postgres store", "err", err)
+		os.Exit(1)
 	}
+	defer pgStore.Close()
+
+	jobProducer, err := kafkaqueue.NewProducer(kafkaqueue.Config{Brokers: brokers, Topic: kafkaJobsTopic})
+	if err != nil {
+		slog.Error("kafka job producer", "err", err)
+		os.Exit(1)
+	}
+	defer jobProducer.Close()
 
 	var eventProducer events.Producer = events.NoopProducer{}
-	if kafkaBrokers != "" {
-		brokers := splitTrim(kafkaBrokers, ",")
-		kp, err := events.NewKafkaProducer(events.KafkaConfig{Brokers: brokers, Topic: kafkaTopic})
+	kp, err := events.NewKafkaProducer(events.KafkaConfig{Brokers: brokers, Topic: kafkaTopic})
+	if err != nil {
+		slog.Warn("kafka events producer", "err", err, "msg", "continuing without events")
+	} else {
+		defer kp.Close()
+		eventProducer = kp
+	}
+
+	process := func(ctx context.Context, req *kafkaqueue.JobRequest) error {
+		rec, err := pgStore.GetByID(ctx, req.JobID)
 		if err != nil {
-			slog.Warn("kafka producer", "err", err, "msg", "continuing without events")
-		} else {
-			defer kp.Close()
-			eventProducer = kp
+			return err
 		}
+		if rec != nil && rec.Status == "cancelled" {
+			return nil
+		}
+		_ = pgStore.UpdateStatus(ctx, req.JobID, "processing", "", req.Attempt, nil)
+		eventProducer.Emit(ctx, events.JobEvent{JobID: req.JobID, Type: req.Type, Event: events.EventStarted, Queue: req.Queue, Attempt: req.Attempt})
+
+		h := registry.Get(req.Type)
+		if h == nil {
+			metrics.JobsProcessedTotal.WithLabelValues(req.Type, "failure").Inc()
+			_ = pgStore.UpdateStatus(ctx, req.JobID, "failed", "unknown task type", req.Attempt, nil)
+			eventProducer.Emit(ctx, events.JobEvent{JobID: req.JobID, Type: req.Type, Event: events.EventFailed, LastError: "unknown task type"})
+			return nil
+		}
+		err = h.Handle(ctx, req.Payload)
+		if err != nil {
+			metrics.JobsProcessedTotal.WithLabelValues(req.Type, "failure").Inc()
+			attempt := req.Attempt + 1
+			maxRetry := int32(0)
+			if req.Options != nil {
+				maxRetry = req.Options.MaxRetry
+			}
+			_ = pgStore.UpdateStatus(ctx, req.JobID, "failed", err.Error(), attempt, nil)
+			if attempt <= maxRetry {
+				_, _ = jobProducer.Enqueue(ctx, req.JobID, req.Type, req.Payload, req.Queue, maxRetry, 0, attempt)
+			} else {
+				_ = pgStore.UpdateStatus(ctx, req.JobID, "archived", err.Error(), attempt, nil)
+				eventProducer.Emit(ctx, events.JobEvent{JobID: req.JobID, Type: req.Type, Event: events.EventArchived, LastError: err.Error(), Attempt: attempt})
+			}
+			eventProducer.Emit(ctx, events.JobEvent{JobID: req.JobID, Type: req.Type, Event: events.EventFailed, LastError: err.Error(), Attempt: attempt})
+			return nil
+		}
+		metrics.JobsProcessedTotal.WithLabelValues(req.Type, "success").Inc()
+		now := time.Now()
+		_ = pgStore.UpdateStatus(ctx, req.JobID, "completed", "", req.Attempt, &now)
+		eventProducer.Emit(ctx, events.JobEvent{JobID: req.JobID, Type: req.Type, Event: events.EventCompleted, Queue: req.Queue})
+		return nil
 	}
 
-	mux := queue.NewServeMux(registry, jobStore, eventProducer)
-
-	redisOpts := asynq.RedisClientOpt{
-		Addr:     redisAddr,
-		Password: redisPassword,
-		DB:       redisDB,
-	}
-
-	// Priority queues: higher weight = more workers on that queue. high:3, default:2, low:1.
-	srv := asynq.NewServer(redisOpts, asynq.Config{
-		Concurrency: concurrency,
-		Queues: map[string]int{
-			"high":    3,
-			"default": 2,
-			"low":     1,
-		},
-	})
-
-	// Health/readiness HTTP server for Kubernetes probes
-	rdb := redis.NewClient(&redis.Options{Addr: redisAddr, Password: redisPassword, DB: redisDB})
+	// Health/readiness HTTP server
 	http.Handle("/metrics", promhttp.Handler())
 	http.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	http.HandleFunc("/ready", func(w http.ResponseWriter, _ *http.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		if rdb.Ping(ctx).Err() != nil {
+		if pgStore.Ping(ctx) != nil {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -96,19 +127,14 @@ func main() {
 		}
 	}()
 
-	go func() {
-		slog.Info("worker starting", "redis", redisAddr, "concurrency", concurrency)
-		if err := srv.Run(mux); err != nil {
-			slog.Error("worker stopped", "err", err)
-			os.Exit(1)
-		}
-	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go kafkaqueue.RunConsumer(ctx, brokers, kafkaJobsTopic, kafkaGroupID, process)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	slog.Info("shutting down worker")
-	srv.Shutdown()
 }
 
 func getEnv(key, def string) string {

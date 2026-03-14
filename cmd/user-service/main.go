@@ -61,7 +61,7 @@ func main() {
 			if len(respBody) > 0 {
 				w.Write(respBody)
 			} else {
-				json.NewEncoder(w).Encode(map[string]string{"error": "job api error", "status": strconv.Itoa(resp.StatusCode)})
+				json.NewEncoder(w).Encode(map[string]string{"error": "job api error (HTTP " + strconv.Itoa(resp.StatusCode) + ")", "status": strconv.Itoa(resp.StatusCode)})
 			}
 			return
 		}
@@ -114,7 +114,7 @@ func main() {
 			if len(respBody) > 0 {
 				w.Write(respBody)
 			} else {
-				json.NewEncoder(w).Encode(map[string]string{"error": "job api error", "status": strconv.Itoa(resp.StatusCode)})
+				json.NewEncoder(w).Encode(map[string]string{"error": "job api error (HTTP " + strconv.Itoa(resp.StatusCode) + ")", "status": strconv.Itoa(resp.StatusCode)})
 			}
 			return
 		}

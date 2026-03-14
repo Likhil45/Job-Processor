@@ -5,20 +5,16 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-
-	jobv1 "github.com/savvients/sip-core/api/proto"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 )
 
-// RESTHandler provides HTTP REST API for jobs, delegating to JobServer.
+// RESTHandler provides HTTP REST API for jobs using JobBackend.
 type RESTHandler struct {
-	server jobv1.JobServiceServer
+	backend JobBackend
 }
 
-// NewRESTHandler returns a REST handler that delegates to the gRPC JobServer.
-func NewRESTHandler(server jobv1.JobServiceServer) *RESTHandler {
-	return &RESTHandler{server: server}
+// NewRESTHandler returns a REST handler that uses the given JobBackend.
+func NewRESTHandler(backend JobBackend) *RESTHandler {
+	return &RESTHandler{backend: backend}
 }
 
 // ServeHTTP routes REST requests: /jobs, /jobs/:id, /jobs/:id/retry|cancel, /admin/queues, /admin/queues/:name/pause|unpause.
@@ -84,13 +80,30 @@ func writeJSON(w http.ResponseWriter, v interface{}, code int) {
 	json.NewEncoder(w).Encode(v)
 }
 
+func writeBackendError(w http.ResponseWriter, err error) {
+	if err == nil {
+		return
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "not found"), strings.Contains(msg, "job_id required"):
+		writeJSONError(w, msg, http.StatusBadRequest)
+	case strings.Contains(msg, "cannot cancel"), strings.Contains(msg, "already running"):
+		writeJSONError(w, msg, http.StatusConflict)
+	case strings.Contains(msg, "not supported"):
+		writeJSONError(w, msg, http.StatusBadRequest)
+	default:
+		writeJSONError(w, msg, http.StatusInternalServerError)
+	}
+}
+
 type submitRequest struct {
 	Type    string          `json:"type"`
 	Payload json.RawMessage `json:"payload"`
 	Options *struct {
-		MaxRetry      int32  `json:"max_retry"`
-		Queue         string `json:"queue"`
-		RunAtUnixSec  int64  `json:"run_at_unix_sec"`
+		MaxRetry     int32  `json:"max_retry"`
+		Queue        string `json:"queue"`
+		RunAtUnixSec int64  `json:"run_at_unix_sec"`
 	} `json:"options"`
 }
 
@@ -109,20 +122,22 @@ func (h *RESTHandler) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	if len(req.Payload) > 0 {
 		payload = req.Payload
 	}
-	submitReq := &jobv1.SubmitJobRequest{Type: req.Type, Payload: payload}
+	queue := "default"
+	maxRetry := int32(0)
+	runAt := int64(0)
 	if req.Options != nil {
-		submitReq.Options = &jobv1.JobOptions{
-			MaxRetry:     req.Options.MaxRetry,
-			Queue:        req.Options.Queue,
-			RunAtUnixSec: req.Options.RunAtUnixSec,
+		if req.Options.Queue != "" {
+			queue = strings.TrimSpace(req.Options.Queue)
 		}
+		maxRetry = req.Options.MaxRetry
+		runAt = req.Options.RunAtUnixSec
 	}
-	resp, err := h.server.SubmitJob(r.Context(), submitReq)
+	jobID, err := h.backend.Submit(r.Context(), req.Type, payload, queue, maxRetry, runAt)
 	if err != nil {
-		writeGRPCError(w, err)
+		writeBackendError(w, err)
 		return
 	}
-	writeJSON(w, map[string]string{"job_id": resp.JobId}, http.StatusCreated)
+	writeJSON(w, map[string]string{"job_id": jobID}, http.StatusCreated)
 }
 
 func (h *RESTHandler) handleList(w http.ResponseWriter, r *http.Request) {
@@ -139,44 +154,39 @@ func (h *RESTHandler) handleList(w http.ResponseWriter, r *http.Request) {
 	if offset < 0 {
 		offset = 0
 	}
-	resp, err := h.server.ListJobs(r.Context(), &jobv1.ListJobsRequest{
-		Queue:  queue,
-		Status: statusFilter,
-		Limit:  int32(limit),
-		Offset: int32(offset),
-	})
+	jobs, err := h.backend.ListJobs(r.Context(), queue, statusFilter, limit, offset)
 	if err != nil {
-		writeGRPCError(w, err)
+		writeBackendError(w, err)
 		return
 	}
-	jobs := make([]map[string]interface{}, 0, len(resp.Jobs))
-	for _, j := range resp.Jobs {
-		jobs = append(jobs, map[string]interface{}{
-			"job_id":               j.JobId,
-			"type":                 j.Type,
-			"queue":                j.Queue,
-			"status":               j.Status,
-			"attempt":              j.Attempt,
-			"last_error":           j.LastError,
-			"created_at_unix_sec":  j.CreatedAtUnixSec,
-			"updated_at_unix_sec":  j.UpdatedAtUnixSec,
+	out := make([]map[string]interface{}, 0, len(jobs))
+	for _, j := range jobs {
+		out = append(out, map[string]interface{}{
+			"job_id":                j.JobID,
+			"type":                  j.Type,
+			"queue":                 j.Queue,
+			"status":                j.Status,
+			"attempt":               j.Attempt,
+			"last_error":            j.LastError,
+			"created_at_unix_sec":   j.CreatedAtUnixSec,
+			"updated_at_unix_sec":   j.UpdatedAtUnixSec,
 			"completed_at_unix_sec": j.CompletedAtUnixSec,
 		})
 	}
-	writeJSON(w, map[string]interface{}{"jobs": jobs}, http.StatusOK)
+	writeJSON(w, map[string]interface{}{"jobs": out}, http.StatusOK)
 }
 
 func (h *RESTHandler) handleGetStatus(w http.ResponseWriter, r *http.Request, jobID string) {
-	resp, err := h.server.GetJobStatus(r.Context(), &jobv1.GetJobStatusRequest{JobId: jobID})
+	status, lastError, attempt, err := h.backend.GetStatus(r.Context(), jobID)
 	if err != nil {
-		writeGRPCError(w, err)
+		writeBackendError(w, err)
 		return
 	}
 	writeJSON(w, map[string]interface{}{
-		"job_id":     resp.JobId,
-		"status":     resp.Status,
-		"attempt":    resp.Attempt,
-		"last_error": resp.LastError,
+		"job_id":     jobID,
+		"status":     status,
+		"attempt":    attempt,
+		"last_error": lastError,
 	}, http.StatusOK)
 }
 
@@ -191,9 +201,8 @@ func (h *RESTHandler) handleRetry(w http.ResponseWriter, r *http.Request, jobID 
 	if queue == "" {
 		queue = "default"
 	}
-	_, err := h.server.RetryArchivedJob(r.Context(), &jobv1.RetryArchivedJobRequest{JobId: jobID, Queue: queue})
-	if err != nil {
-		writeGRPCError(w, err)
+	if err := h.backend.RetryArchivedJob(r.Context(), jobID, queue); err != nil {
+		writeBackendError(w, err)
 		return
 	}
 	writeJSON(w, map[string]string{"ok": "true"}, http.StatusOK)
@@ -206,28 +215,11 @@ type cancelRequest struct {
 func (h *RESTHandler) handleCancel(w http.ResponseWriter, r *http.Request, jobID string) {
 	var req cancelRequest
 	_ = json.NewDecoder(r.Body).Decode(&req)
-	_, err := h.server.CancelJob(r.Context(), &jobv1.CancelJobRequest{JobId: jobID, Queue: req.Queue})
-	if err != nil {
-		writeGRPCError(w, err)
+	if err := h.backend.CancelJob(r.Context(), jobID); err != nil {
+		writeBackendError(w, err)
 		return
 	}
 	writeJSON(w, map[string]string{"ok": "true"}, http.StatusOK)
-}
-
-func writeGRPCError(w http.ResponseWriter, err error) {
-	st, ok := status.FromError(err)
-	if !ok {
-		writeJSONError(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	switch st.Code() {
-	case codes.InvalidArgument, codes.NotFound:
-		writeJSONError(w, st.Message(), http.StatusBadRequest)
-	case codes.FailedPrecondition:
-		writeJSONError(w, st.Message(), http.StatusConflict) // 409 for "cannot cancel"
-	default:
-		writeJSONError(w, st.Message(), http.StatusInternalServerError)
-	}
 }
 
 func (h *RESTHandler) serveAdmin(w http.ResponseWriter, r *http.Request, parts []string) {
@@ -237,24 +229,24 @@ func (h *RESTHandler) serveAdmin(w http.ResponseWriter, r *http.Request, parts [
 	}
 	if len(parts) == 2 {
 		if r.Method == http.MethodGet {
-			resp, err := h.server.ListQueues(r.Context(), &jobv1.ListQueuesRequest{})
+			queues, err := h.backend.ListQueues(r.Context())
 			if err != nil {
-				writeGRPCError(w, err)
+				writeBackendError(w, err)
 				return
 			}
-			queues := make([]map[string]interface{}, 0, len(resp.Queues))
-			for _, q := range resp.Queues {
-				queues = append(queues, map[string]interface{}{
+			out := make([]map[string]interface{}, 0, len(queues))
+			for _, q := range queues {
+				out = append(out, map[string]interface{}{
 					"name":      q.Name,
 					"pending":   q.Pending,
-					"active":   q.Active,
+					"active":    q.Active,
 					"scheduled": q.Scheduled,
-					"retry":    q.Retry,
-					"archived": q.Archived,
-					"paused":   q.Paused,
+					"retry":     q.Retry,
+					"archived":  q.Archived,
+					"paused":    q.Paused,
 				})
 			}
-			writeJSON(w, map[string]interface{}{"queues": queues}, http.StatusOK)
+			writeJSON(w, map[string]interface{}{"queues": out}, http.StatusOK)
 			return
 		}
 		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -272,16 +264,14 @@ func (h *RESTHandler) serveAdmin(w http.ResponseWriter, r *http.Request, parts [
 	}
 	switch action {
 	case "pause":
-		_, err := h.server.PauseQueue(r.Context(), &jobv1.PauseQueueRequest{Queue: queueName})
-		if err != nil {
-			writeGRPCError(w, err)
+		if err := h.backend.PauseQueue(r.Context(), queueName); err != nil {
+			writeBackendError(w, err)
 			return
 		}
 		writeJSON(w, map[string]string{"ok": "true"}, http.StatusOK)
 	case "unpause":
-		_, err := h.server.UnpauseQueue(r.Context(), &jobv1.UnpauseQueueRequest{Queue: queueName})
-		if err != nil {
-			writeGRPCError(w, err)
+		if err := h.backend.UnpauseQueue(r.Context(), queueName); err != nil {
+			writeBackendError(w, err)
 			return
 		}
 		writeJSON(w, map[string]string{"ok": "true"}, http.StatusOK)

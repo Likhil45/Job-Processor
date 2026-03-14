@@ -1,15 +1,16 @@
-// Enqueue enqueues one job for testing (Phase 1). Usage: go run ./cmd/enqueue [task_type] [payload]
+// Enqueue enqueues one job via the Job API REST endpoint. Usage: go run ./cmd/enqueue [task_type] [payload]
 // Example: go run ./cmd/enqueue hello "world"
+// Requires JOB_API_URL (e.g. http://localhost:8080).
 package main
 
 import (
-	"context"
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
-	"strconv"
-
-	"github.com/savvients/sip-core/internal/queue"
 )
 
 func main() {
@@ -22,26 +23,33 @@ func main() {
 		payload = []byte(os.Args[2])
 	}
 
-	redisAddr := getEnv("REDIS_ADDR", "localhost:6379")
-	redisPassword := getEnv("REDIS_PASSWORD", "")
-	redisDB, _ := strconv.Atoi(getEnv("REDIS_DB", "0"))
-
-	client, err := queue.NewClient(queue.RedisOpts{
-		Addr:     redisAddr,
-		Password: redisPassword,
-		DB:       redisDB,
-	})
-	if err != nil {
-		log.Fatalf("queue client: %v", err)
+	baseURL := getEnv("JOB_API_URL", "http://localhost:8080")
+	body := map[string]interface{}{
+		"type":    taskType,
+		"payload": string(payload),
 	}
-	defer client.Close()
-
-	ctx := context.Background()
-	id, err := client.Enqueue(ctx, taskType, payload)
+	raw, _ := json.Marshal(body)
+	req, err := http.NewRequest(http.MethodPost, baseURL+"/jobs", bytes.NewReader(raw))
+	if err != nil {
+		log.Fatalf("request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		log.Fatalf("enqueue: %v", err)
 	}
-	fmt.Printf("enqueued job id=%s type=%s payload=%s\n", id, taskType, string(payload))
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		log.Fatalf("enqueue: %s %s", resp.Status, string(b))
+	}
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		log.Fatalf("response: %v", err)
+	}
+	fmt.Printf("enqueued job id=%s type=%s payload=%s\n", out.JobID, taskType, string(payload))
 }
 
 func getEnv(key, def string) string {

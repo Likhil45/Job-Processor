@@ -1,34 +1,34 @@
 # How to Use This Repo
 
-This repo is a **distributed job processing system**: you submit jobs (email, report, invoice, etc.) via an API, and worker processes run them in the background using Redis as the queue.
+This repo is a **distributed job processing system**: you submit jobs (email, report, invoice, etc.) via a **REST API**. Workers consume from **Kafka** (`job.requests`), run the job handlers, and update **PostgreSQL** for status. No Redis or gRPC.
 
 ---
 
 ## Prerequisites
 
 - **Go 1.24+** (for local run)
-- **Docker** (for full demo with Postgres, MailHog, dashboard)
-- **Redis** (required — run via Docker or Minikube)
+- **Docker** (for full demo)
+- **PostgreSQL** and **Kafka** (required for API and worker — use Docker Compose for the demo)
 
 ---
 
-## Option A: Fastest local run (no Docker)
+## Option A: Fastest local run (with Docker for Postgres + Kafka)
 
-Good for trying the API and worker with minimal setup.
-
-1. **Start Redis** (pick one):
+1. **Start Postgres and Kafka** (Kafka runs in **KRaft mode** — no Zookeeper; Zookeeper is deprecated):
 
    ```bash
-   # Using Docker
-   docker run -d -p 6379:6379 --name redis redis:7-alpine
+   docker run -d --name postgres -e POSTGRES_USER=jobs -e POSTGRES_PASSWORD=jobs -e POSTGRES_DB=jobs -p 5432:5432 postgres:15-alpine
+   # KRaft: controller+broker in one (no Zookeeper)
+   docker run -d --name kafka -p 9092:9092 -e KAFKA_CFG_NODE_ID=0 -e KAFKA_CFG_PROCESS_ROLES=controller,broker -e KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 -e KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 bitnami/kafka:latest
    ```
 
-   Or use Minikube and port-forward (see README).
+   Apply schema once: `psql -U jobs -h localhost jobs -f deploy/postgres/schema.sql`
 
-2. **Start the API and worker** (two terminals or background):
+2. **Start the API and worker**:
 
    ```bash
-   export REDIS_ADDR=localhost:6379
+   set POSTGRES_DSN=postgres://jobs:jobs@localhost:5432/jobs?sslmode=disable
+   set KAFKA_BROKERS=localhost:9092
    go run ./cmd/api &
    go run ./cmd/worker &
    ```
@@ -36,10 +36,9 @@ Good for trying the API and worker with minimal setup.
 3. **Submit a job**:
 
    ```bash
-   # REST (returns job_id)
-   curl -X POST http://localhost:8080/jobs -H "Content-Type: application/json" -d '{"type":"hello","payload":"world"}'
+   curl -X POST http://localhost:8080/jobs -H "Content-Type: application/json" -d "{\"type\":\"hello\",\"payload\":\"world\"}"
 
-   # Or CLI
+   # Or CLI (set JOB_API_URL=http://localhost:8080)
    go run ./cmd/enqueue hello "world"
    ```
 
@@ -49,13 +48,13 @@ Good for trying the API and worker with minimal setup.
    curl http://localhost:8080/jobs/<job_id>
    ```
 
-**Ports:** API gRPC `:50051`, REST `:8080`, metrics `:9090`. Worker health `:9090`.
+**Ports:** REST `:8080`, metrics `:9090`. Worker health `:9090`.
 
 ---
 
 ## Option B: Full stack with Docker (recommended for demo)
 
-Runs Redis, Postgres, MailHog, Job API, worker, dashboard, user-service, and billing-service.
+Runs Kafka, Postgres, MailHog, Job API, worker, dashboard, user-service, and billing-service.
 
 1. **Start all services**:
 
@@ -69,13 +68,14 @@ Runs Redis, Postgres, MailHog, Job API, worker, dashboard, user-service, and bil
    docker exec -i $(docker compose -f deploy/demo/docker-compose.yml ps -q postgres) psql -U jobs jobs < deploy/postgres/schema.sql
    ```
 
-3. **Run the demo script** (submits hello, email, report jobs):
+3. **Run the demo script** (submits hello, email, report jobs). Run from the **repo root**; the script waits up to ~60s for the API:
 
    ```bash
+   export JOB_API_URL=http://localhost:8083
    ./scripts/demo.sh
    ```
 
-   On Windows use Git Bash for the script, or submit jobs via the dashboard or curl (see below).
+   On Windows use Git Bash. If the API is not reachable, check `docker compose -f deploy/demo/docker-compose.yml logs job-api`. Or submit jobs via the dashboard (http://localhost:8080) or curl.
 
 4. **Use the system**:
 
@@ -100,14 +100,14 @@ Runs Redis, Postgres, MailHog, Job API, worker, dashboard, user-service, and bil
 
 ### Submit jobs
 
-- **REST** (recommended): `POST http://localhost:8080/jobs` (or `:8083` in Docker) with JSON body:
+- **REST**: `POST http://localhost:8080/jobs` (or `:8083` in Docker) with JSON body:
   - `type`: `hello` | `email` | `report` | `invoice` | `image`
   - `payload`: type-specific JSON (see [docs/CURL_EXAMPLES.md](CURL_EXAMPLES.md))
   - Optional `options`: `queue`, `max_retry`, `run_at_unix_sec`
 
-- **gRPC**: use `grpcurl` to `job.v1.JobService/SubmitJob` on port `50051`.
+- **Enqueue CLI**: `JOB_API_URL=http://localhost:8080 go run ./cmd/enqueue <type> "<payload>"`
 
-- **Upstream services**: call user-service (register, password-reset) or billing-service (invoice, report, invoice-ready); they submit jobs to the Job API for you.
+- **Upstream services**: user-service (register, password-reset) or billing-service (invoice, report, invoice-ready) submit jobs to the Job API via REST.
 
 ### Check job status
 
@@ -116,19 +116,18 @@ Runs Redis, Postgres, MailHog, Job API, worker, dashboard, user-service, and bil
 
 ### List jobs
 
-- **REST**: `GET http://localhost:8080/jobs?queue=default&limit=20`  
-  Requires Postgres; without it the list is empty.
+- **REST**: `GET http://localhost:8080/jobs?queue=default&status=&limit=20`  
+  Uses Postgres; returns jobs for the given queue/status.
 
 ### Cancel or retry
 
 - **Cancel** (pending/scheduled): `POST http://localhost:8080/jobs/<job_id>/cancel`
-- **Retry** (archived/DLQ): `POST http://localhost:8080/jobs/<job_id>/retry` with body `{"queue":"default"}`
+- **Retry** (archived): `POST http://localhost:8080/jobs/<job_id>/retry` with body `{"queue":"default"}`
 
 ### Admin (queues)
 
-- **List queues**: `GET http://localhost:8080/admin/queues`
-- **Pause**: `POST http://localhost:8080/admin/queues/default/pause`
-- **Unpause**: `POST http://localhost:8080/admin/queues/default/unpause`
+- **List queues**: `GET http://localhost:8080/admin/queues` (Kafka-only mode returns empty list).
+- **Pause / Unpause**: Not supported in Kafka-only mode (returns error).
 
 Full curl examples: [docs/CURL_EXAMPLES.md](CURL_EXAMPLES.md).
 
@@ -148,23 +147,35 @@ For email in Docker demo, MailHog catches all mail at http://localhost:8025.
 
 ---
 
-## Optional: Postgres and Kafka
+## Architecture (Kafka + Postgres)
 
-- **Postgres**: Set `POSTGRES_DSN` for the API and worker to persist job metadata and enable `GET /jobs` list. Schema: `deploy/postgres/schema.sql`.
-- **Kafka**: Set `KAFKA_BROKERS` to publish job lifecycle events to topic `job.events`. Set `KAFKA_CONSUMER_TOPIC` on the API to consume job requests from Kafka and enqueue them to Redis.
+- **API**: REST only. Writes job metadata to Postgres and produces to Kafka topic `job.requests`. Status and list come from Postgres.
+- **Worker**: Consumes from `job.requests`, checks Postgres for cancelled, runs handlers, updates Postgres and produces to `job.events`.
+- **Postgres**: Required. Schema in `deploy/postgres/schema.sql`.
+- **Kafka**: Required. Runs in **KRaft mode** (no Zookeeper; Zookeeper is deprecated). Topics: `job.requests` (queue), `job.events` (lifecycle events). Topics are auto-created if the broker allows it.
 
 ---
 
 ## Troubleshooting
 
+- **“POSTGRES_DSN is required” / “KAFKA_BROKERS is required”**  
+  API and worker need both. Set env vars (see README).
+
 - **“Connection refused” to API**  
   Ensure the API is running and you’re using the right port (8080 local, 8083 in Docker for REST).
 
+- **“API not reachable after 60s” (demo script)**  
+  1) Run Docker Compose from the **repo root**: `docker compose -f deploy/demo/docker-compose.yml up -d`.  
+  2) Check that job-api is running: `docker compose -f deploy/demo/docker-compose.yml ps` (job-api should be “Up”).  
+  3) Check job-api logs: `docker compose -f deploy/demo/docker-compose.yml logs job-api`. You should see **“REST server addr=:8080”**. If you see **“gRPC server listening”** instead, the container is running an old image — **rebuild**: `docker compose -f deploy/demo/docker-compose.yml up -d --build job-api`, then run the demo script again.  
+  4) From the host, test: `curl -s http://127.0.0.1:8083/jobs` (use `127.0.0.1` instead of `localhost` if on Docker Desktop for Windows).  
+  5) If the API is reachable via curl but the script still fails, set `JOB_API_URL=http://127.0.0.1:8083` and run the script again.
+
 - **Jobs stay “pending”**  
-  Worker must be running and connected to the same Redis as the API. Check worker logs.
+  Worker must be running and consuming from the same Kafka (`job.requests`). Check worker logs and Kafka.
 
 - **List jobs empty**  
-  List uses Postgres. Set `POSTGRES_DSN` and apply the schema.
+  Ensure Postgres schema is applied and jobs were submitted (API writes to Postgres on submit).
 
 - **Email not visible**  
   With Docker, use MailHog at http://localhost:8025. Set `SMTP_ADDR` (e.g. `mailhog:1025`) for the worker.

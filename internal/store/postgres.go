@@ -31,6 +31,11 @@ func (s *PostgresStore) Close() error {
 	return s.db.Close()
 }
 
+// Ping verifies the database connection is alive (for readiness probes).
+func (s *PostgresStore) Ping(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
 // Create inserts a new job record.
 func (s *PostgresStore) Create(ctx context.Context, job *JobRecord) error {
 	query := `

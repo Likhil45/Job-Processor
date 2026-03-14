@@ -1,38 +1,25 @@
-// Demo server: serves a simple dashboard and proxies job submit/status to the gRPC Job API.
-// Usage: JOB_API_ADDR=localhost:50051 go run ./cmd/demo-server
+// Demo server: serves a simple dashboard and proxies job submit/status to the Job API REST.
+// Usage: JOB_API_URL=http://localhost:8080 go run ./cmd/demo-server
 package main
 
 import (
 	_ "embed"
+	"bytes"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
-
-	jobv1 "github.com/savvients/sip-core/api/proto"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 //go:embed static/index.html
 var indexHTML []byte
 
-var (
-	jobClient jobv1.JobServiceClient
-	conn      *grpc.ClientConn
-)
+var jobAPIBaseURL string
 
 func main() {
-	apiAddr := getEnv("JOB_API_ADDR", "localhost:50051")
-	var err error
-	conn, err = grpc.NewClient(apiAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		slog.Error("grpc dial", "addr", apiAddr, "err", err)
-		os.Exit(1)
-	}
-	defer conn.Close()
-	jobClient = jobv1.NewJobServiceClient(conn)
+	jobAPIBaseURL = strings.TrimSuffix(getEnv("JOB_API_URL", "http://localhost:8080"), "/")
 
 	http.HandleFunc("/", serveIndex)
 	http.HandleFunc("/api/submit", handleSubmit)
@@ -54,7 +41,6 @@ func getEnv(key, def string) string {
 	return def
 }
 
-// writeJSONError sends a JSON body {"error": msg} so the frontend can parse it.
 func writeJSONError(w http.ResponseWriter, msg string, code int) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -76,9 +62,9 @@ func handleLinks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	links := map[string]string{
-		"mailhog":   "http://localhost:8025",
-		"report":    "See ./out/demo-report.csv after running the demo",
-		"grpc_port": "50051",
+		"mailhog":    "http://localhost:8025",
+		"report":     "See ./out/demo-report.csv after running the demo",
+		"job_api":    jobAPIBaseURL,
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(links)
@@ -103,17 +89,40 @@ func handleSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	payload := getDefaultPayload(req.Type)
-	resp, err := jobClient.SubmitJob(r.Context(), &jobv1.SubmitJobRequest{
-		Type:    req.Type,
-		Payload: payload,
-	})
+	body := map[string]interface{}{
+		"type":    req.Type,
+		"payload": json.RawMessage(payload),
+	}
+	raw, _ := json.Marshal(body)
+	hr, err := http.NewRequest(http.MethodPost, jobAPIBaseURL+"/jobs", bytes.NewReader(raw))
+	if err != nil {
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	hr.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(hr)
 	if err != nil {
 		slog.Warn("submit job", "type", req.Type, "err", err)
 		writeJSONError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		slog.Warn("submit job", "type", req.Type, "status", resp.Status, "body", string(b))
+		w.WriteHeader(resp.StatusCode)
+		w.Write(b)
+		return
+	}
+	var out struct {
+		JobID string `json:"job_id"`
+	}
+	if err := json.Unmarshal(b, &out); err != nil {
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"job_id": resp.JobId})
+	json.NewEncoder(w).Encode(map[string]string{"job_id": out.JobID})
 }
 
 func getDefaultPayload(jobType string) []byte {
@@ -139,17 +148,19 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, "job_id required", http.StatusBadRequest)
 		return
 	}
-	resp, err := jobClient.GetJobStatus(r.Context(), &jobv1.GetJobStatusRequest{JobId: jobID})
+	resp, err := http.Get(jobAPIBaseURL + "/jobs/" + jobID)
 	if err != nil {
 		slog.Warn("get status", "job_id", jobID, "err", err)
 		writeJSONError(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		w.WriteHeader(resp.StatusCode)
+		w.Write(b)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"job_id":     resp.JobId,
-		"status":     resp.Status,
-		"attempt":    resp.Attempt,
-		"last_error": resp.LastError,
-	})
+	w.Write(b)
 }
