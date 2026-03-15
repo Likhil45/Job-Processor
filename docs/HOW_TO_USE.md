@@ -86,7 +86,7 @@ Runs Kafka, Postgres, MailHog, Job API, worker, scheduler, dashboard, user-servi
    | View emails       | http://localhost:8025 (MailHog) |
    | User service      | http://localhost:8081 |
    | Billing service   | http://localhost:8082 |
-   | Logs (Loki)       | http://localhost:3100 — Promtail ships container logs to Loki; use Grafana with datasource `http://loki:3100` to query (Explore) |
+   | Logs (Loki + Grafana) | Loki http://localhost:3100; Grafana http://localhost:3000 (admin/admin), Loki pre-configured. In Explore use query `{stack="demo"}` or `{container=~"job-api|job-worker|dashboard"}` and time range "Last 15 minutes" (Docker driver uses labels `container`, `stack`, not `job`). |
    | Report output     | `./out/demo-report.csv` (after report job runs) |
 
 5. **Stop**:

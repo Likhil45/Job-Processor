@@ -22,8 +22,7 @@ scrape_configs:
         target_label: 'container'
       - source_labels: ['__meta_docker_container_log_stream']
         target_label: 'stream'
-      - replace:
-          target_label: 'job'
-          replacement: 'docker'
+      - target_label: 'job'
+        replacement: 'docker'
     pipeline_stages:
       - docker: {}

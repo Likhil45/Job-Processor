@@ -2,10 +2,12 @@
 # Usage: docker compose -f deploy/demo/docker-compose.yml up -d
 # Then apply Postgres schema and run ./scripts/demo.sh (see README Demo section)
 #
-# Logs: Loki (http://localhost:3100) stores logs; Promtail ships container logs to Loki.
-# On Linux, Promtail mounts the Docker socket and container log dir. On Docker Desktop (Windows/Mac),
-# those paths may not be available; add Grafana and use "Explore > Loki" with URL http://loki:3100
-# (from another container), or install the Loki Docker log driver and send logs from each service to Loki.
+# Logs: Loki (http://localhost:3100) stores logs. Two ways to get logs into Loki:
+# 1) Promtail (reads container logs from host; works on Linux, often not on Docker Desktop).
+# 2) Loki Docker log driver (below): install once with:
+#    docker plugin install grafana/loki-docker-driver:2.9.4 --alias loki --grant-all-permissions
+# Then recreate the stack so job-api, job-worker, job-scheduler, dashboard send stdout to Loki.
+# URL host.docker.internal:3100 works on Docker Desktop (Win/Mac). On Linux use 127.0.0.1:3100 if needed.
 
 services:
   # Kafka in KRaft mode (no Zookeeper). Uses Apache Kafka image (pullable when Bitnami fails).
@@ -71,6 +73,12 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://host.docker.internal:3100/loki/api/v1/push"
+        loki-batch-size: "400"
+        loki-external-labels: "container=job-api,stack=demo"
 
   job-scheduler:
     build:
@@ -94,6 +102,12 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://127.0.0.1:3100/loki/api/v1/push"
+        loki-batch-size: "400"
+        loki-external-labels: "container=job-scheduler,stack=demo"
 
   job-worker:
     build:
@@ -116,6 +130,12 @@ services:
       - kafka
       - postgres
       - job-api
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://host.docker.internal:3100/loki/api/v1/push"
+        loki-batch-size: "400"
+        loki-external-labels: "container=job-worker,stack=demo"
 
   user-service:
     build:
@@ -152,6 +172,12 @@ services:
       LISTEN_ADDR: ":8080"
     depends_on:
       - job-api
+    logging:
+      driver: loki
+      options:
+        loki-url: "http://host.docker.internal:3100/loki/api/v1/push"
+        loki-batch-size: "400"
+        loki-external-labels: "container=dashboard,stack=demo"
 
   loki:
     image: grafana/loki:2.9.4
@@ -177,4 +203,22 @@ services:
       - loki
     # On Docker Desktop (Windows/Mac) the container log path may not be available;
     # Promtail may show no logs. Use Loki Docker log driver on app services as an alternative.
+
+  grafana:
+    image: grafana/grafana:10.2.3
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_SERVER_HTTP_PORT: "3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - loki
+
+volumes:
+  grafana_data:
 

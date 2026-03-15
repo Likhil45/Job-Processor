@@ -92,6 +92,8 @@ func writeBackendError(w http.ResponseWriter, err error) {
 		writeJSONError(w, msg, http.StatusConflict)
 	case strings.Contains(msg, "not supported"):
 		writeJSONError(w, msg, http.StatusBadRequest)
+	case strings.Contains(msg, "does not exist") || strings.Contains(msg, "42P01"):
+		writeJSONError(w, "Database schema not applied. Apply the schema once (from repo root): docker exec -i $(docker compose -f deploy/demo/docker-compose.yml ps -q postgres) psql -U jobs jobs < deploy/postgres/schema.sql", http.StatusServiceUnavailable)
 	default:
 		writeJSONError(w, msg, http.StatusInternalServerError)
 	}

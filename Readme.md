@@ -81,7 +81,7 @@ Run the full stack locally (Kafka, Postgres, MailHog, Job API, worker, scheduler
    - **User service:** http://localhost:8081 — POST /register, POST /password-reset.
    - **Billing service:** http://localhost:8082 — POST /invoice, POST /report, POST /invoice-ready.
    - **Scheduler:** Runs in the stack; generates fake jobs every 2m. Health/metrics: http://localhost:9091. See [docs/SCHEDULER.md](docs/SCHEDULER.md).
-   - **Logs (Loki):** Loki at http://localhost:3100; Promtail ships container logs to Loki. Add Grafana (e.g. port 3000) and add a Loki datasource `http://loki:3100` to query logs in Explore.
+   - **Logs (Loki + Grafana):** Loki at http://localhost:3100; Promtail ships container logs to Loki. Grafana at http://localhost:3000 (admin/admin) with Loki datasource pre-configured — use Explore to query logs.
    - **Emails:** http://localhost:8025 (MailHog).
    - **Report:** `./out/demo-report.csv` (after report job runs).
 

@@ -28,11 +28,5 @@ schema_config:
         prefix: index_
         period: 24h
 
-limits_config:
-  metric_aggregation_enabled: true
-
 ruler:
   alertmanager_url: http://localhost:9093
-
-frontend:
-  encoding: protobuf
