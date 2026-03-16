@@ -183,4 +183,4 @@ For email in Docker demo, MailHog catches all mail at http://localhost:8025.
 - **Email not visible**  
   With Docker, use MailHog at http://localhost:8025. Set `SMTP_ADDR` (e.g. `mailhog:1025`) for the worker.
 
-More detail: [Readme.md](../Readme.md) and [docs/CURL_EXAMPLES.md](CURL_EXAMPLES.md).
+More detail: [README.md](../README.md) and [docs/CURL_EXAMPLES.md](CURL_EXAMPLES.md).

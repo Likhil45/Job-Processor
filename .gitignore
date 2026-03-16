@@ -1,0 +1,25 @@
+# Debug / session logs
+debug-*.log
+
+# Build artifacts
+/bin/
+/dist/
+*.exe
+
+# Demo output (directory kept via out/.gitkeep)
+out/
+!out/.gitkeep
+
+# IDE and editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go (optional)
+vendor/
