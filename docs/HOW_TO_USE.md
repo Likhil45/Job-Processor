@@ -2,6 +2,8 @@
 
 This repo is a **distributed job processing system**: you submit jobs (email, report, invoice, etc.) via a **REST API**. Workers consume from **Kafka** (`job.requests`), run the job handlers, and update **PostgreSQL** for status. No Redis or gRPC.
 
+**→ For a one-page workflow (local / Docker / Kubernetes + daily ops), see [WORKFLOW.md](WORKFLOW.md).** This doc has full detail and troubleshooting.
+
 ---
 
 ## Prerequisites

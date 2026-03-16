@@ -70,7 +70,7 @@ func main() {
 		}); err != nil {
 			return "", err
 		}
-		if _, err := jobProducer.Enqueue(ctx, jobID, jobType, payload, queue, maxRetry, 0, 0); err != nil {
+		if _, err := jobProducer.Enqueue(ctx, jobID, jobType, payload, queue, maxRetry, 0, 0, 0); err != nil {
 			return "", err
 		}
 		metrics.JobsScheduledTotal.WithLabelValues(jobType).Inc()
@@ -100,6 +100,7 @@ func main() {
 	defer cancel()
 	go scheduler.Run(ctx, interval, submit)
 	go scheduler.RunPromoter(ctx, pgStore, jobProducer, 15*time.Second)
+	go scheduler.RunRecurring(ctx, pgStore, jobProducer, time.Minute)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

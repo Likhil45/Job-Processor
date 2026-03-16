@@ -26,6 +26,8 @@ func main() {
 	http.HandleFunc("/api/submit", handleSubmit)
 	http.HandleFunc("/api/status/", handleStatus)
 	http.HandleFunc("/api/scenario/", handleScenario)
+	http.HandleFunc("/api/archived", handleArchived)
+	http.HandleFunc("/api/retry", handleRetry)
 	http.HandleFunc("/api/links", handleLinks)
 
 	addr := getEnv("LISTEN_ADDR", ":8080")
@@ -262,6 +264,66 @@ func scenarioSteps(id string) []string {
 	default:
 		return nil
 	}
+}
+
+func handleArchived(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	url := jobAPIBaseURL + "/jobs/archived?" + r.URL.RawQuery
+	resp, err := http.Get(url)
+	if err != nil {
+		slog.Warn("archived list", "err", err)
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(b)
+}
+
+func handleRetry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSONError(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req struct {
+		JobID string `json:"job_id"`
+		Queue string `json:"queue"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	req.JobID = strings.TrimSpace(req.JobID)
+	if req.JobID == "" {
+		writeJSONError(w, "job_id required", http.StatusBadRequest)
+		return
+	}
+	if req.Queue == "" {
+		req.Queue = "default"
+	}
+	body, _ := json.Marshal(map[string]string{"queue": req.Queue})
+	hr, err := http.NewRequest(http.MethodPost, jobAPIBaseURL+"/jobs/"+req.JobID+"/retry", bytes.NewReader(body))
+	if err != nil {
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	hr.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(hr)
+	if err != nil {
+		slog.Warn("retry archived", "job_id", req.JobID, "err", err)
+		writeJSONError(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	w.Write(b)
 }
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {

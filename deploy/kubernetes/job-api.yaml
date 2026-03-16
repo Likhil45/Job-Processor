@@ -1,0 +1,71 @@
+# Job API (Kafka+Postgres): REST API for job submit, status, schedules, admin.
+# Depends on: job-app-config ConfigMap, job-app-secret Secret.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: job-api
+  namespace: default
+  labels:
+    app: job-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: job-api
+  template:
+    metadata:
+      labels:
+        app: job-api
+    spec:
+      containers:
+        - name: api
+          image: job-api:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: rest
+            - containerPort: 9090
+              name: metrics
+          envFrom:
+            - configMapRef:
+                name: job-app-config
+            - secretRef:
+                name: job-app-secret
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 9090
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: job-api
+  namespace: default
+  labels:
+    app: job-api
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      name: rest
+    - port: 9090
+      targetPort: 9090
+      name: metrics
+  selector:
+    app: job-api

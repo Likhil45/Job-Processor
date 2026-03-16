@@ -1,0 +1,8 @@
+{"endpoint":"http://jaeger:4318","hypothesisId":"B,E","location":"internal/telemetry/tracing.go","message":"InitTracer started","serviceName":"job-api","sessionId":"3a3d06","timestamp":1773695150437}
+{"endpoint":"http://jaeger:4318","err":"","hypothesisId":"A,E","location":"internal/telemetry/tracing.go","message":"OTLP exporter create","sessionId":"3a3d06","timestamp":1773695150763}
+{"hypothesisId":"D","location":"internal/telemetry/tracing.go","message":"resource created","resource_err":true,"serviceName":"job-api","sessionId":"3a3d06","timestamp":1773695150910}
+{"data":{"endpoint":"http://jaeger:4318","err":"conflicting Schema URL: https://opentelemetry.io/schemas/1.40.0 and https://opentelemetry.io/schemas/1.21.0"},"hypothesisId":"A,E","location":"cmd/api/main.go","message":"api InitTracer result","sessionId":"3a3d06","timestamp":1773695151167}
+{"endpoint":"http://jaeger:4318","hypothesisId":"B,E","location":"internal/telemetry/tracing.go","message":"InitTracer started","serviceName":"job-worker","sessionId":"3a3d06","timestamp":1773695152577}
+{"endpoint":"http://jaeger:4318","err":"","hypothesisId":"A,E","location":"internal/telemetry/tracing.go","message":"OTLP exporter create","sessionId":"3a3d06","timestamp":1773695152581}
+{"hypothesisId":"D","location":"internal/telemetry/tracing.go","message":"resource created","resource_err":true,"serviceName":"job-worker","sessionId":"3a3d06","timestamp":1773695152652}
+{"data":{"endpoint":"http://jaeger:4318","err":"conflicting Schema URL: https://opentelemetry.io/schemas/1.40.0 and https://opentelemetry.io/schemas/1.21.0"},"hypothesisId":"A,E","location":"cmd/worker/main.go","message":"worker InitTracer result","sessionId":"3a3d06","timestamp":1773695152716}

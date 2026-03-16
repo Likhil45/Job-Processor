@@ -2,7 +2,10 @@
 
 This repo includes a phased implementation of a **distributed job processing system** for local development on Minikube.
 
-**→ [How to use this repo](docs/HOW_TO_USE.md)** — quick start (local or Docker), submitting jobs, checking status, and admin.  
+**→ [Working flow and how to demo](docs/WORKING_FLOW_AND_DEMO.md)** — end-to-end job flow and step-by-step demo.  
+**→ [How to demo all features](docs/DEMO_ALL_FEATURES.md)** — checklist and walkthrough for every feature (job types, scenarios A–E, DLQ, upstream services, observability).  
+**→ [How to use — workflow](docs/WORKFLOW.md)** — one-page flow: local run, Docker demo, Kubernetes, and daily operations.  
+**→ [How to use (full)](docs/HOW_TO_USE.md)** — detailed options, troubleshooting, and job types.  
 **→ [How user-service and billing-service are used](docs/UPSTREAM_SERVICES.md)** — demo upstream services that submit jobs to the Job API.  
 **→ [Fake job scheduler](docs/SCHEDULER.md)** — periodic fake job generator (email, image, invoice, report) that enqueues to Kafka + Postgres.
 
@@ -49,9 +52,9 @@ This repo includes a phased implementation of a **distributed job processing sys
    # Or: set JOB_API_URL=http://localhost:8080 && go run ./cmd/enqueue hello "world"
    ```
 
-### Deploy to Minikube
+### Deploy to Kubernetes (Kafka + Postgres)
 
-Minikube manifests in `deploy/minikube` reference Redis and need to be updated for Kafka + Postgres. Use the Docker Compose demo stack for a full local run (Kafka, Postgres, API, worker).
+Use **deploy/kubernetes** for the fintech Kafka+Postgres stack: ConfigMap and Secret (with placeholder DSN), Deployments and Services for job-api, job-worker, and job-scheduler. Kafka and Postgres can run **outside the cluster** (e.g. Confluent Cloud, Amazon RDS)—see [deploy/kubernetes/README.md](deploy/kubernetes/README.md) for apply order and external services. The older **deploy/minikube** manifests target the Redis stack and are kept for reference.
 
 ### Demo (one-command run)
 
@@ -81,6 +84,7 @@ Run the full stack locally (Kafka, Postgres, MailHog, Job API, worker, scheduler
    - **User service:** http://localhost:8081 — POST /register, POST /password-reset.
    - **Billing service:** http://localhost:8082 — POST /invoice, POST /report, POST /invoice-ready.
    - **Scheduler:** Runs in the stack; generates fake jobs every 2m. Health/metrics: http://localhost:9091. See [docs/SCHEDULER.md](docs/SCHEDULER.md).
+   - **Traces (Jaeger):** http://localhost:16686 — distributed traces from API submit through Kafka to worker (set `OTEL_EXPORTER_OTLP_ENDPOINT` in demo stack). See [docs/TRACING.md](docs/TRACING.md).
    - **Logs (Loki + Grafana):** Loki at http://localhost:3100; Promtail ships container logs to Loki. Grafana at http://localhost:3000 (admin/admin) with Loki datasource pre-configured — use Explore to query logs.
    - **Emails:** http://localhost:8025 (MailHog).
    - **Report:** `./out/demo-report.csv` (after report job runs).
@@ -110,7 +114,8 @@ Run the full stack locally (Kafka, Postgres, MailHog, Job API, worker, scheduler
 - `internal/events` – Kafka job lifecycle event producer
 - `internal/metrics` – Prometheus counters/histograms
 - `api/proto` – Protobuf (retained for reference; API is REST-only)
-- `deploy/minikube` – Kubernetes manifests (to be updated for Kafka)
+- `deploy/kubernetes` – Kubernetes manifests for Kafka+Postgres (api, worker, scheduler; ConfigMap/Secret; see README for external Kafka/Postgres)
+- `deploy/minikube` – Kubernetes manifests for Redis stack (legacy)
 
 ### Environment variables
 

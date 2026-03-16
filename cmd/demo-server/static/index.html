@@ -57,6 +57,29 @@
     <div id="status-result" class="status"></div>
   </div>
 
+  <div class="card">
+    <h2 style="margin-top:0; font-size:1.1rem;">Archived (DLQ)</h2>
+    <p style="font-size:0.9rem; color:#64748b; margin:0 0 0.75rem 0;">List and replay failed jobs that exceeded max retries.</p>
+    <button id="btn-load-archived">Load archived</button>
+    <div id="archived-error" class="error" style="margin-top:0.5rem; display:none;"></div>
+    <div id="archived-table-wrap" style="margin-top:0.75rem; overflow-x:auto; display:none;">
+      <table id="archived-table" style="width:100%; border-collapse:collapse; font-size:0.85rem;">
+        <thead>
+          <tr style="border-bottom:1px solid #ddd; text-align:left;">
+            <th style="padding:0.35rem 0.5rem;">job_id</th>
+            <th style="padding:0.35rem 0.5rem;">type</th>
+            <th style="padding:0.35rem 0.5rem;">queue</th>
+            <th style="padding:0.35rem 0.5rem;">attempt</th>
+            <th style="padding:0.35rem 0.5rem;">last_error</th>
+            <th style="padding:0.35rem 0.5rem;">created_at</th>
+            <th style="padding:0.35rem 0.5rem;"></th>
+          </tr>
+        </thead>
+        <tbody id="archived-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
   <div class="links">
     <a href="http://localhost:8025" target="_blank">Open MailHog (emails)</a>
   </div>
@@ -126,6 +149,63 @@
           statusResult.innerHTML = '<span class="error">' + e.message + '</span>';
         }
       btnStatus.disabled = false;
+    });
+
+    const archivedErrorEl = document.getElementById('archived-error');
+    const archivedTableWrap = document.getElementById('archived-table-wrap');
+    const archivedTbody = document.getElementById('archived-tbody');
+    document.getElementById('btn-load-archived').addEventListener('click', async () => {
+      archivedErrorEl.style.display = 'none';
+      archivedTableWrap.style.display = 'block';
+      archivedTbody.innerHTML = '<tr><td colspan="7" style="padding:0.5rem;">Loading…</td></tr>';
+      try {
+        const res = await fetch('/api/archived?limit=50');
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || res.statusText || 'Request failed');
+        const jobs = data.jobs || [];
+        if (jobs.length === 0) {
+          archivedTbody.innerHTML = '<tr><td colspan="7" style="padding:0.5rem;">No archived jobs.</td></tr>';
+          return;
+        }
+        archivedTbody.innerHTML = jobs.map(j => {
+          const created = j.created_at_unix_sec ? new Date(j.created_at_unix_sec * 1000).toISOString() : '';
+          const err = (j.last_error || '').substring(0, 80) + (j.last_error && j.last_error.length > 80 ? '…' : '');
+          return '<tr style="border-bottom:1px solid #eee">' +
+            '<td style="padding:0.35rem 0.5rem; font-family:monospace; word-break:break-all;">' + (j.job_id || '') + '</td>' +
+            '<td style="padding:0.35rem 0.5rem;">' + (j.type || '') + '</td>' +
+            '<td style="padding:0.35rem 0.5rem;">' + (j.queue || '') + '</td>' +
+            '<td style="padding:0.35rem 0.5rem;">' + (j.attempt ?? '') + '</td>' +
+            '<td style="padding:0.35rem 0.5rem; max-width:200px;" title="' + (j.last_error || '').replace(/"/g, '&quot;') + '">' + (err || '—') + '</td>' +
+            '<td style="padding:0.35rem 0.5rem;">' + created + '</td>' +
+            '<td style="padding:0.35rem 0.5rem;"><button class="replay-btn" data-job-id="' + (j.job_id || '').replace(/"/g, '&quot;') + '" data-queue="' + (j.queue || 'default').replace(/"/g, '&quot;') + '">Replay</button></td>' +
+            '</tr>';
+        }).join('');
+        archivedTbody.querySelectorAll('.replay-btn').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const jobId = btn.dataset.jobId;
+            const queue = btn.dataset.queue || 'default';
+            btn.disabled = true;
+            try {
+              const res = await fetch('/api/retry', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ job_id: jobId, queue: queue })
+              });
+              const data = await res.json().catch(() => ({}));
+              if (!res.ok) throw new Error(data.error || res.statusText || 'Replay failed');
+              jobIdInput.value = jobId;
+              statusResult.innerHTML = '<strong>Replay enqueued.</strong> New job created; check status.';
+            } catch (e) {
+              statusResult.innerHTML = '<span class="error">Replay error: ' + e.message + '</span>';
+            }
+            btn.disabled = false;
+          });
+        });
+      } catch (e) {
+        archivedErrorEl.textContent = e.message;
+        archivedErrorEl.style.display = 'block';
+        archivedTbody.innerHTML = '<tr><td colspan="7" style="padding:0.5rem;"></td></tr>';
+      }
     });
   </script>
 </body>

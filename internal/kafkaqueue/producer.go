@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 const defaultJobsTopic = "job.requests"
@@ -22,6 +24,7 @@ type JobRequest struct {
 	Options *struct {
 		MaxRetry     int32 `json:"max_retry,omitempty"`
 		RunAtUnixSec int64 `json:"run_at_unix_sec,omitempty"`
+		Priority     int32 `json:"priority,omitempty"`
 	} `json:"options,omitempty"`
 }
 
@@ -54,9 +57,9 @@ func NewProducer(cfg Config) (*Producer, error) {
 	return &Producer{writer: writer, topic: cfg.Topic}, nil
 }
 
-// Enqueue produces a job request. If jobID is empty, a new UUID is generated. attempt is used for retries (0 for new jobs).
+// Enqueue produces a job request. If jobID is empty, a new UUID is generated. attempt is used for retries (0 for new jobs). priority: 0=default, higher=processed first.
 // Returns the job ID.
-func (p *Producer) Enqueue(ctx context.Context, jobID, jobType string, payload []byte, queue string, maxRetry int32, runAtUnixSec int64, attempt int32) (string, error) {
+func (p *Producer) Enqueue(ctx context.Context, jobID, jobType string, payload []byte, queue string, maxRetry int32, runAtUnixSec int64, attempt int32, priority int32) (string, error) {
 	if jobID == "" {
 		jobID = uuid.New().String()
 	}
@@ -67,20 +70,26 @@ func (p *Producer) Enqueue(ctx context.Context, jobID, jobType string, payload [
 		Queue:   queue,
 		Attempt: attempt,
 	}
-	if maxRetry > 0 || runAtUnixSec > 0 {
+	if maxRetry > 0 || runAtUnixSec > 0 || priority != 0 {
 		req.Options = &struct {
 			MaxRetry     int32 `json:"max_retry,omitempty"`
 			RunAtUnixSec int64 `json:"run_at_unix_sec,omitempty"`
-		}{MaxRetry: maxRetry, RunAtUnixSec: runAtUnixSec}
+			Priority     int32 `json:"priority,omitempty"`
+		}{MaxRetry: maxRetry, RunAtUnixSec: runAtUnixSec, Priority: priority}
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
 		return "", err
 	}
-	err = p.writer.WriteMessages(ctx, kafka.Message{
-		Key:   []byte(jobID),
-		Value: body,
-	})
+	msg := kafka.Message{Key: []byte(jobID), Value: body}
+	if prop := otel.GetTextMapPropagator(); prop != nil {
+		carrier := make(propagation.MapCarrier)
+		prop.Inject(ctx, carrier)
+		for k, v := range carrier {
+			msg.Headers = append(msg.Headers, kafka.Header{Key: k, Value: []byte(v)})
+		}
+	}
+	err = p.writer.WriteMessages(ctx, msg)
 	if err != nil {
 		slog.Warn("kafkaqueue: write failed", "job_id", jobID, "err", err)
 		return "", err

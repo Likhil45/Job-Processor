@@ -34,7 +34,8 @@ func NewEmailHandler(smtpAddr, from string) *Email {
 
 func (e *Email) Type() string { return EmailType }
 
-func (e *Email) Handle(ctx context.Context, payload []byte) error {
+// ValidateEmailPayload checks payload without sending. Used when writing to outbox.
+func ValidateEmailPayload(payload []byte) error {
 	var p EmailPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fmt.Errorf("email payload: %w", err)
@@ -42,6 +43,15 @@ func (e *Email) Handle(ctx context.Context, payload []byte) error {
 	if strings.TrimSpace(p.To) == "" {
 		return fmt.Errorf("email: missing to")
 	}
+	return nil
+}
+
+func (e *Email) Handle(ctx context.Context, payload []byte) error {
+	if err := ValidateEmailPayload(payload); err != nil {
+		return err
+	}
+	var p EmailPayload
+	_ = json.Unmarshal(payload, &p)
 	if e.SMTPAddr == "" {
 		slog.Info("email job (no SMTP)", "to", p.To, "subject", p.Subject)
 		return nil

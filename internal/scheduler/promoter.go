@@ -32,7 +32,7 @@ func promoteDue(ctx context.Context, st store.Store, producer *kafkaqueue.Produc
 		return
 	}
 	for _, j := range due {
-		_, err := producer.Enqueue(ctx, j.ID, j.Type, j.Payload, j.Queue, 2, 0, 0)
+		_, err := producer.Enqueue(ctx, j.ID, j.Type, j.Payload, j.Queue, 2, 0, 0, j.Priority)
 		if err != nil {
 			slog.Warn("promote enqueue failed", "job_id", j.ID, "err", err)
 			continue

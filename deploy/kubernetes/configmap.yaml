@@ -1,0 +1,21 @@
+# Non-secret configuration for job-api, job-worker, and job-scheduler (Kafka+Postgres stack).
+# For in-cluster Kafka use the values below; for external Kafka/Postgres see README.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: job-app-config
+  namespace: default
+  labels:
+    app.kubernetes.io/component: config
+data:
+  # Kafka (override for external e.g. Confluent Cloud)
+  KAFKA_BROKERS: "kafka:9092"
+  KAFKA_TOPIC: "job.events"
+  KAFKA_JOBS_TOPIC: "job.requests"
+  KAFKA_CONSUMER_GROUP: "job-worker"
+  # API
+  REST_ADDR: ":8080"
+  METRICS_ADDR: ":9090"
+  # Scheduler
+  SCHEDULER_INTERVAL: "2m"
+  SCHEDULER_HTTP_ADDR: ":9091"

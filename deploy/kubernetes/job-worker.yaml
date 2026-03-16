@@ -1,0 +1,71 @@
+# Job Worker (Kafka+Postgres): consumes from Kafka, processes jobs, updates Postgres.
+# Depends on: job-app-config ConfigMap, job-app-secret Secret.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: job-worker
+  namespace: default
+  labels:
+    app: job-worker
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: job-worker
+  template:
+    metadata:
+      labels:
+        app: job-worker
+    spec:
+      containers:
+        - name: worker
+          image: job-worker:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: job-app-config
+            - secretRef:
+                name: job-app-secret
+          env:
+            - name: SMTP_ADDR
+              value: ""   # optional; set to mailhog or real SMTP for email jobs
+            - name: EMAIL_FROM
+              value: "noreply@localhost"
+          ports:
+            - containerPort: 9090
+              name: health
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9090
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 9090
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "200m"
+            limits:
+              memory: "512Mi"
+              cpu: "1000m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: job-worker
+  namespace: default
+  labels:
+    app: job-worker
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - port: 9090
+      name: metrics
+  selector:
+    app: job-worker

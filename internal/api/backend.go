@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/robfig/cron/v3"
 	"github.com/savvients/sip-core/internal/events"
 	"github.com/savvients/sip-core/internal/kafkaqueue"
 	"github.com/savvients/sip-core/internal/metrics"
@@ -14,15 +15,32 @@ import (
 
 // JobBackend is the REST-only backend: Kafka for queue, Postgres for metadata.
 type JobBackend interface {
-	Submit(ctx context.Context, jobType string, payload []byte, queue string, maxRetry int32, runAtUnixSec int64) (jobID string, err error)
+	Submit(ctx context.Context, jobType string, payload []byte, queue string, maxRetry int32, runAtUnixSec int64, idempotencyKey string, priority int32) (jobID string, err error)
 	GetStatus(ctx context.Context, jobID string) (status, lastError string, attempt int32, err error)
 	ListJobs(ctx context.Context, queue, statusFilter string, limit, offset int) ([]JobInfo, error)
 	CancelJob(ctx context.Context, jobID string) error
-	ListArchivedJobs(ctx context.Context, queue string, limit int) ([]ArchivedJobInfo, error)
+	ListArchivedJobs(ctx context.Context, queue, jobType string, limit, offset int) ([]ArchivedJobInfo, error)
+	GetArchivedJob(ctx context.Context, jobID string) (*ArchivedJobInfo, error)
 	RetryArchivedJob(ctx context.Context, jobID, queue string) error
 	ListQueues(ctx context.Context) ([]QueueInfo, error)
 	PauseQueue(ctx context.Context, queue string) error
 	UnpauseQueue(ctx context.Context, queue string) error
+
+	CreateSchedule(ctx context.Context, name, jobType string, payload []byte, cronExpr, queue string, maxRetry int32) (id int64, err error)
+	ListSchedules(ctx context.Context) ([]ScheduleInfo, error)
+	DeleteSchedule(ctx context.Context, id int64) error
+}
+
+// ScheduleInfo is a schedule for list response.
+type ScheduleInfo struct {
+	ID         int64
+	Name       string
+	Type       string
+	CronExpr   string
+	Queue      string
+	MaxRetry   int32
+	NextRunAt  time.Time
+	CreatedAt  time.Time
 }
 
 // JobInfo is a single job for list response.
@@ -40,12 +58,13 @@ type JobInfo struct {
 
 // ArchivedJobInfo for DLQ list.
 type ArchivedJobInfo struct {
-	JobID     string
-	Queue     string
-	Type      string
-	Payload   []byte
-	Attempt   int32
-	LastError string
+	JobID            string
+	Queue            string
+	Type             string
+	Payload          []byte
+	Attempt          int32
+	LastError        string
+	CreatedAtUnixSec int64
 }
 
 // QueueInfo for admin (stubbed when using Kafka only).
@@ -74,12 +93,21 @@ func NewKafkaPostgresBackend(store store.Store, producer *kafkaqueue.Producer, e
 	return &KafkaPostgresBackend{store: store, producer: producer, events: eventProducer}
 }
 
-func (b *KafkaPostgresBackend) Submit(ctx context.Context, jobType string, payload []byte, queue string, maxRetry int32, runAtUnixSec int64) (string, error) {
+func (b *KafkaPostgresBackend) Submit(ctx context.Context, jobType string, payload []byte, queue string, maxRetry int32, runAtUnixSec int64, idempotencyKey string, priority int32) (string, error) {
 	if jobType == "" {
 		return "", fmt.Errorf("type required")
 	}
 	if queue == "" {
 		queue = "default"
+	}
+	if idempotencyKey != "" {
+		existing, err := b.store.GetByIdempotencyKey(ctx, jobType, queue, idempotencyKey)
+		if err != nil {
+			return "", err
+		}
+		if existing != nil {
+			return existing.ID, nil
+		}
 	}
 	jobID := uuid.New().String()
 	statusStr := "pending"
@@ -87,13 +115,15 @@ func (b *KafkaPostgresBackend) Submit(ctx context.Context, jobType string, paylo
 		statusStr = "scheduled"
 	}
 	if err := b.store.Create(ctx, &store.JobRecord{
-		ID:           jobID,
-		Type:         jobType,
-		Payload:      payload,
-		Queue:        queue,
-		Status:       statusStr,
-		AsynqTaskID:  jobID,
-		RunAtUnixSec: runAtUnixSec,
+		ID:             jobID,
+		Type:           jobType,
+		Payload:        payload,
+		Queue:          queue,
+		Status:         statusStr,
+		AsynqTaskID:    jobID,
+		RunAtUnixSec:   runAtUnixSec,
+		IdempotencyKey: idempotencyKey,
+		Priority:       priority,
 	}); err != nil {
 		return "", err
 	}
@@ -103,7 +133,7 @@ func (b *KafkaPostgresBackend) Submit(ctx context.Context, jobType string, paylo
 		b.events.Emit(ctx, events.JobEvent{JobID: jobID, Type: jobType, Event: events.EventSubmitted, Queue: queue, Payload: payload})
 		return jobID, nil
 	}
-	if _, err := b.producer.Enqueue(ctx, jobID, jobType, payload, queue, maxRetry, runAtUnixSec, 0); err != nil {
+	if _, err := b.producer.Enqueue(ctx, jobID, jobType, payload, queue, maxRetry, runAtUnixSec, 0, priority); err != nil {
 		return "", err
 	}
 	metrics.JobsEnqueuedTotal.WithLabelValues(jobType, queue).Inc()
@@ -172,26 +202,43 @@ func (b *KafkaPostgresBackend) CancelJob(ctx context.Context, jobID string) erro
 	return nil
 }
 
-func (b *KafkaPostgresBackend) ListArchivedJobs(ctx context.Context, queue string, limit int) ([]ArchivedJobInfo, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
-	}
-	recs, err := b.store.List(ctx, queue, "archived", limit, 0)
+func (b *KafkaPostgresBackend) ListArchivedJobs(ctx context.Context, queue, jobType string, limit, offset int) ([]ArchivedJobInfo, error) {
+	recs, err := b.store.ListArchived(ctx, queue, jobType, limit, offset)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]ArchivedJobInfo, 0, len(recs))
 	for _, r := range recs {
 		out = append(out, ArchivedJobInfo{
-			JobID:     r.ID,
-			Queue:     r.Queue,
-			Type:      r.Type,
-			Payload:   r.Payload,
-			Attempt:   r.Attempt,
-			LastError: r.LastError,
+			JobID:            r.ID,
+			Queue:            r.Queue,
+			Type:             r.Type,
+			Payload:          r.Payload,
+			Attempt:          r.Attempt,
+			LastError:        r.LastError,
+			CreatedAtUnixSec: r.CreatedAt.Unix(),
 		})
 	}
 	return out, nil
+}
+
+func (b *KafkaPostgresBackend) GetArchivedJob(ctx context.Context, jobID string) (*ArchivedJobInfo, error) {
+	rec, err := b.store.GetByID(ctx, jobID)
+	if err != nil || rec == nil {
+		return nil, nil
+	}
+	if rec.Status != "archived" {
+		return nil, nil
+	}
+	return &ArchivedJobInfo{
+		JobID:            rec.ID,
+		Queue:            rec.Queue,
+		Type:             rec.Type,
+		Payload:          rec.Payload,
+		Attempt:          rec.Attempt,
+		LastError:        rec.LastError,
+		CreatedAtUnixSec: rec.CreatedAt.Unix(),
+	}, nil
 }
 
 func (b *KafkaPostgresBackend) RetryArchivedJob(ctx context.Context, jobID, queue string) error {
@@ -211,7 +258,7 @@ func (b *KafkaPostgresBackend) RetryArchivedJob(ctx context.Context, jobID, queu
 	if rec.Status != "archived" {
 		return fmt.Errorf("job is not archived")
 	}
-	newID, err := b.producer.Enqueue(ctx, "", rec.Type, rec.Payload, queue, 0, 0, 0)
+	newID, err := b.producer.Enqueue(ctx, "", rec.Type, rec.Payload, queue, 0, 0, 0, rec.Priority)
 	if err != nil {
 		return err
 	}
@@ -222,18 +269,93 @@ func (b *KafkaPostgresBackend) RetryArchivedJob(ctx context.Context, jobID, queu
 		Queue:       queue,
 		Status:      "pending",
 		AsynqTaskID: newID,
+		Priority:    rec.Priority,
 	})
 }
 
 func (b *KafkaPostgresBackend) ListQueues(ctx context.Context) ([]QueueInfo, error) {
-	// Kafka-only: no Redis queues. Return empty or stub.
-	return []QueueInfo{}, nil
+	infos, err := b.store.ListQueues(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]QueueInfo, 0, len(infos))
+	for _, q := range infos {
+		out = append(out, QueueInfo{
+			Name:      q.Name,
+			Pending:   q.Pending,
+			Active:    q.Active,
+			Scheduled: q.Scheduled,
+			Retry:     q.Retry,
+			Archived:  q.Archived,
+			Paused:    q.Paused,
+		})
+	}
+	return out, nil
 }
 
 func (b *KafkaPostgresBackend) PauseQueue(ctx context.Context, queue string) error {
-	return fmt.Errorf("pause queue not supported in Kafka-only mode")
+	if queue == "" {
+		return fmt.Errorf("queue name required")
+	}
+	return b.store.SetQueuePaused(ctx, queue, true)
 }
 
 func (b *KafkaPostgresBackend) UnpauseQueue(ctx context.Context, queue string) error {
-	return fmt.Errorf("unpause queue not supported in Kafka-only mode")
+	if queue == "" {
+		return fmt.Errorf("queue name required")
+	}
+	return b.store.SetQueuePaused(ctx, queue, false)
+}
+
+func (b *KafkaPostgresBackend) CreateSchedule(ctx context.Context, name, jobType string, payload []byte, cronExpr, queue string, maxRetry int32) (int64, error) {
+	if name == "" || jobType == "" || cronExpr == "" {
+		return 0, fmt.Errorf("name, type, and cron_expr required")
+	}
+	if queue == "" {
+		queue = "default"
+	}
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	sched, err := parser.Parse(cronExpr)
+	if err != nil {
+		return 0, fmt.Errorf("invalid cron_expr: %w", err)
+	}
+	now := time.Now()
+	sch := &store.ScheduleRecord{
+		Name:        name,
+		Type:        jobType,
+		PayloadJSON: payload,
+		CronExpr:    cronExpr,
+		Queue:       queue,
+		MaxRetry:    maxRetry,
+		NextRunAt:   sched.Next(now),
+	}
+	if err := b.store.CreateSchedule(ctx, sch); err != nil {
+		return 0, err
+	}
+	return sch.ID, nil
+}
+
+func (b *KafkaPostgresBackend) ListSchedules(ctx context.Context) ([]ScheduleInfo, error) {
+	recs, err := b.store.ListSchedules(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ScheduleInfo, 0, len(recs))
+	for _, r := range recs {
+		out = append(out, ScheduleInfo{
+			ID:        r.ID,
+			Name:      r.Name,
+			Type:      r.Type,
+			CronExpr:  r.CronExpr,
+			Queue:     r.Queue,
+			MaxRetry:  r.MaxRetry,
+			NextRunAt: r.NextRunAt,
+			CreatedAt: r.CreatedAt,
+		})
+	}
+	return out, nil
+}
+
+func (b *KafkaPostgresBackend) DeleteSchedule(ctx context.Context, id int64) error {
+	return b.store.DeleteSchedule(ctx, id)
 }

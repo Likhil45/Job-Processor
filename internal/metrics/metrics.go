@@ -39,4 +39,28 @@ var (
 		},
 		[]string{"type"},
 	)
+	// JobsArchivedTotal counts jobs moved to DLQ (archived) by type and queue.
+	JobsArchivedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "jobs_archived_total",
+			Help: "Total number of jobs archived (DLQ)",
+		},
+		[]string{"type", "queue"},
+	)
+	// JobsRetriedTotal counts job retries (re-enqueue after failure) by type and queue.
+	JobsRetriedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "jobs_retried_total",
+			Help: "Total number of job retries (re-enqueued after failure)",
+		},
+		[]string{"type", "queue"},
+	)
+	// JobsSLABreachedTotal counts jobs that exceeded their SLA (completed_at - created_at > sla_sec).
+	JobsSLABreachedTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "jobs_sla_breached_total",
+			Help: "Total number of jobs that exceeded SLA duration",
+		},
+		[]string{"type", "queue"},
+	)
 )

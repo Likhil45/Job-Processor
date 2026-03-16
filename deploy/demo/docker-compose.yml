@@ -47,12 +47,30 @@ services:
       interval: 2s
       timeout: 3s
       retries: 5
+      start_period: 40s
 
   mailhog:
     image: mailhog/mailhog:latest
     ports:
       - "1025:1025"
       - "8025:8025"
+
+  # Jaeger: OTLP HTTP on 4318, UI on 16686. job-api and job-worker send traces here.
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    ports:
+      - "16686:16686"   # UI
+      - "4318:4318"     # OTLP HTTP
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      # Bind OTLP to all interfaces so other containers (job-api, job-worker) can send traces.
+      COLLECTOR_OTLP_HTTP_HOST_PORT: "0.0.0.0:4318"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:16686 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
 
   job-api:
     build:
@@ -68,10 +86,16 @@ services:
       KAFKA_BROKERS: "kafka:9092"
       KAFKA_TOPIC: job.events
       KAFKA_JOBS_TOPIC: job.requests
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318"
+      DEBUG_LOG_PATH: "/debug/debug-3a3d06.log"
+    volumes:
+      - ../../:/debug
     depends_on:
       kafka:
         condition: service_healthy
       postgres:
+        condition: service_healthy
+      jaeger:
         condition: service_healthy
     logging:
       driver: loki
@@ -119,6 +143,8 @@ services:
       KAFKA_TOPIC: job.events
       KAFKA_JOBS_TOPIC: job.requests
       KAFKA_CONSUMER_GROUP: job-worker
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://jaeger:4318"
+      DEBUG_LOG_PATH: "/debug/debug-3a3d06.log"
       SMTP_ADDR: mailhog:1025
       EMAIL_FROM: noreply@localhost
       REPORT_OUTPUT_DIR: /out
@@ -126,10 +152,16 @@ services:
       IMAGE_OUTPUT_DIR: /out
     volumes:
       - ../../out:/out
+      - ../../:/debug
     depends_on:
-      - kafka
-      - postgres
-      - job-api
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      job-api:
+        condition: service_started
+      jaeger:
+        condition: service_healthy
     logging:
       driver: loki
       options:
