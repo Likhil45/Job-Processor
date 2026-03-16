@@ -27,7 +27,30 @@
 </head>
 <body>
   <h1>Job Queue Demo</h1>
-  <p class="sub">Submit jobs and check status. Use <strong>Demo scenarios</strong> to show normal flow, retries, delayed run, DLQ, and crash recovery.</p>
+  <p class="sub">Submit jobs, check status, and manage <strong>Archived (DLQ)</strong>. Use <strong>Demo scenarios</strong> to show normal flow, retries, delayed run, DLQ, and crash recovery.</p>
+
+  <div class="card" id="archived-dlq">
+    <h2 style="margin-top:0; font-size:1.1rem;">Archived (DLQ)</h2>
+    <p style="font-size:0.9rem; color:#64748b; margin:0 0 0.75rem 0;">List and replay failed jobs that exceeded max retries.</p>
+    <button id="btn-load-archived">Load archived</button>
+    <div id="archived-error" class="error" style="margin-top:0.5rem; display:none;"></div>
+    <div id="archived-table-wrap" style="margin-top:0.75rem; overflow-x:auto; display:none;">
+      <table id="archived-table" style="width:100%; border-collapse:collapse; font-size:0.85rem;">
+        <thead>
+          <tr style="border-bottom:1px solid #ddd; text-align:left;">
+            <th style="padding:0.35rem 0.5rem;">job_id</th>
+            <th style="padding:0.35rem 0.5rem;">type</th>
+            <th style="padding:0.35rem 0.5rem;">queue</th>
+            <th style="padding:0.35rem 0.5rem;">attempt</th>
+            <th style="padding:0.35rem 0.5rem;">last_error</th>
+            <th style="padding:0.35rem 0.5rem;">created_at</th>
+            <th style="padding:0.35rem 0.5rem;"></th>
+          </tr>
+        </thead>
+        <tbody id="archived-tbody"></tbody>
+      </table>
+    </div>
+  </div>
 
   <div class="card">
     <h2 style="margin-top:0; font-size:1.1rem;">Demo scenarios</h2>
@@ -55,29 +78,6 @@
     <input type="text" id="job-id-input" placeholder="Paste job ID" style="width:100%; padding:0.5rem; margin-bottom:0.5rem;">
     <button id="btn-status">Get status</button>
     <div id="status-result" class="status"></div>
-  </div>
-
-  <div class="card">
-    <h2 style="margin-top:0; font-size:1.1rem;">Archived (DLQ)</h2>
-    <p style="font-size:0.9rem; color:#64748b; margin:0 0 0.75rem 0;">List and replay failed jobs that exceeded max retries.</p>
-    <button id="btn-load-archived">Load archived</button>
-    <div id="archived-error" class="error" style="margin-top:0.5rem; display:none;"></div>
-    <div id="archived-table-wrap" style="margin-top:0.75rem; overflow-x:auto; display:none;">
-      <table id="archived-table" style="width:100%; border-collapse:collapse; font-size:0.85rem;">
-        <thead>
-          <tr style="border-bottom:1px solid #ddd; text-align:left;">
-            <th style="padding:0.35rem 0.5rem;">job_id</th>
-            <th style="padding:0.35rem 0.5rem;">type</th>
-            <th style="padding:0.35rem 0.5rem;">queue</th>
-            <th style="padding:0.35rem 0.5rem;">attempt</th>
-            <th style="padding:0.35rem 0.5rem;">last_error</th>
-            <th style="padding:0.35rem 0.5rem;">created_at</th>
-            <th style="padding:0.35rem 0.5rem;"></th>
-          </tr>
-        </thead>
-        <tbody id="archived-tbody"></tbody>
-      </table>
-    </div>
   </div>
 
   <div class="links">
